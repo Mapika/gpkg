@@ -1,16 +1,25 @@
 """Tests for uvforge matching logic."""
 
+import os
 import pytest
 
 from uvforge.cli import (
     _template_to_regex,
+    compare_lock,
     cuda_matches,
+    ExplainReport,
     normalize_cuda,
     pick_best,
     platform_matches,
     python_tag_matches,
+    read_lockfile,
+    RejectReason,
+    search_source_explain,
+    Source,
+    torch_compat_matches,
     torch_matches,
     WheelMatch,
+    write_lockfile,
 )
 
 
@@ -183,3 +192,139 @@ class TestPickBest:
 
     def test_empty(self):
         assert pick_best([]) is None
+
+
+# -- torch_compat matching -------------------------------------------------
+
+
+class TestTorchCompat:
+    def test_empty_always_matches(self):
+        assert torch_compat_matches("", "2.11")
+        assert torch_compat_matches("", "1.0")
+
+    def test_gte(self):
+        assert torch_compat_matches(">=2.4", "2.4")
+        assert torch_compat_matches(">=2.4", "2.11")
+        assert not torch_compat_matches(">=2.4", "2.3")
+
+    def test_lt(self):
+        assert torch_compat_matches("<2.6", "2.5")
+        assert torch_compat_matches("<2.6", "2.4")
+        assert not torch_compat_matches("<2.6", "2.6")
+        assert not torch_compat_matches("<2.6", "2.11")
+
+    def test_range(self):
+        assert torch_compat_matches(">=2.4,<2.6", "2.4")
+        assert torch_compat_matches(">=2.4,<2.6", "2.5")
+        assert not torch_compat_matches(">=2.4,<2.6", "2.3")
+        assert not torch_compat_matches(">=2.4,<2.6", "2.6")
+
+    def test_eq_neq(self):
+        assert torch_compat_matches("==2.11", "2.11")
+        assert not torch_compat_matches("==2.11", "2.10")
+        assert torch_compat_matches("!=2.10", "2.11")
+        assert not torch_compat_matches("!=2.10", "2.10")
+
+    def test_gt_lte(self):
+        assert torch_compat_matches(">2.4", "2.5")
+        assert not torch_compat_matches(">2.4", "2.4")
+        assert torch_compat_matches("<=2.6", "2.6")
+        assert not torch_compat_matches("<=2.6", "2.7")
+
+
+# -- Lockfile round-trip ---------------------------------------------------
+
+
+class TestLockfile:
+    def _make_match(self, pkg: str, version: str) -> WheelMatch:
+        return WheelMatch(
+            package=pkg,
+            filename=f"{pkg}-{version}.whl",
+            url=f"https://example.com/{pkg}-{version}.whl",
+            version=version,
+            torch_version="2.11",
+            cuda_tag="130",
+            python_tag="cp312-cp312",
+            platform_tag="linux_x86_64",
+            source_desc="test source",
+            release_tag="v1.0",
+        )
+
+    def test_write_and_read(self, tmp_path):
+        lockfile = str(tmp_path / "uvforge.lock.toml")
+        matches = {"flash-attn": self._make_match("flash-attn", "2.8.3")}
+        write_lockfile(lockfile, "2.11", "130", "3.12", "linux_x86_64", "TRUE", matches)
+        data = read_lockfile(lockfile)
+        assert data is not None
+        assert data["environment"]["torch"] == "2.11"
+        assert data["environment"]["cuda"] == "130"
+        assert len(data["wheels"]) == 1
+        assert data["wheels"][0]["package"] == "flash-attn"
+        assert data["wheels"][0]["version"] == "2.8.3"
+
+    def test_read_missing(self):
+        assert read_lockfile("/nonexistent/path.toml") is None
+
+    def test_compare_no_changes(self, tmp_path):
+        matches = {"flash-attn": self._make_match("flash-attn", "2.8.3")}
+        lockfile = str(tmp_path / "uvforge.lock.toml")
+        write_lockfile(lockfile, "2.11", "130", "3.12", "linux_x86_64", "TRUE", matches)
+        old = read_lockfile(lockfile)
+        changes = compare_lock(old, matches)
+        assert changes == []
+
+    def test_compare_version_bump(self, tmp_path):
+        old_matches = {"flash-attn": self._make_match("flash-attn", "2.8.3")}
+        lockfile = str(tmp_path / "uvforge.lock.toml")
+        write_lockfile(lockfile, "2.11", "130", "3.12", "linux_x86_64", "TRUE", old_matches)
+        old = read_lockfile(lockfile)
+
+        new_matches = {"flash-attn": self._make_match("flash-attn", "2.9.0")}
+        changes = compare_lock(old, new_matches)
+        assert len(changes) == 1
+        assert "2.8.3" in changes[0] and "2.9.0" in changes[0]
+
+    def test_compare_added_removed(self, tmp_path):
+        old_matches = {"flash-attn": self._make_match("flash-attn", "2.8.3")}
+        lockfile = str(tmp_path / "uvforge.lock.toml")
+        write_lockfile(lockfile, "2.11", "130", "3.12", "linux_x86_64", "TRUE", old_matches)
+        old = read_lockfile(lockfile)
+
+        new_matches = {"mamba-ssm": self._make_match("mamba-ssm", "1.0.0")}
+        changes = compare_lock(old, new_matches)
+        assert len(changes) == 2  # one added, one removed
+        texts = " ".join(changes)
+        assert "mamba-ssm" in texts
+        assert "flash-attn" in texts
+
+
+# -- Explain report --------------------------------------------------------
+
+
+class TestExplainReport:
+    def test_reject_reason_fields(self):
+        r = RejectReason("test.whl", "cuda", "wheel=126 target=130")
+        assert r.filename == "test.whl"
+        assert r.stage == "cuda"
+        assert r.detail == "wheel=126 target=130"
+
+    def test_explain_report_fields(self):
+        src = Source(
+            package="test",
+            description="test source",
+            source_type="github",
+            repo="test/test",
+            wheel_name="test-{version}+cu{cuda}torch{torch}-{pytag}-{platform}.whl",
+        )
+        report = ExplainReport(
+            source=src,
+            regex_pattern=".*",
+            releases_scanned=5,
+            assets_scanned=20,
+            rejected=[RejectReason("a.whl", "cuda")],
+            matched=[],
+        )
+        assert report.releases_scanned == 5
+        assert report.assets_scanned == 20
+        assert len(report.rejected) == 1
+        assert len(report.matched) == 0

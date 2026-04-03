@@ -48,6 +48,7 @@ class Source:
     cuda_style: str = "full"  # "full" (cu130) or "short" (cu13)
     has_abi: bool = False
     torch_format: str = "minor"  # "minor" | "packed" | "full"
+    torch_compat: str = ""  # e.g. ">=2.4,<2.6" — empty means any
     scan_tags: int = 8
 
     _regex: Optional[re.Pattern] = field(default=None, repr=False, compare=False)
@@ -105,6 +106,7 @@ def load_registry(path_or_url: str, client: httpx.Client) -> list[Source]:
             cuda_style=e.get("cuda_style", "full"),
             has_abi=e.get("has_abi", False),
             torch_format=e.get("torch_format", "minor"),
+            torch_compat=e.get("torch_compat", ""),
             scan_tags=e.get("scan_tags", 8),
         )
         for e in data.get("sources", [])
@@ -148,6 +150,25 @@ class WheelMatch:
         return tuple(int(n) for n in nums)
 
 
+@dataclass
+class RejectReason:
+    """Why a candidate wheel was rejected."""
+    filename: str
+    stage: str  # "regex", "cuda", "torch", "python", "platform", "abi"
+    detail: str = ""
+
+
+@dataclass
+class ExplainReport:
+    """Diagnostic report for one source's matching attempt."""
+    source: Source
+    regex_pattern: str
+    releases_scanned: int
+    assets_scanned: int
+    rejected: list[RejectReason]
+    matched: list[WheelMatch]
+
+
 def normalize_cuda(cuda_tag: str, style: str) -> str:
     if style == "full":
         if len(cuda_tag) == 3:
@@ -155,6 +176,43 @@ def normalize_cuda(cuda_tag: str, style: str) -> str:
         if len(cuda_tag) == 2:
             return f"{cuda_tag[0]}.{cuda_tag[1]}"
     return cuda_tag
+
+
+def _parse_version(v: str) -> tuple[int, ...]:
+    """Parse '2.11' or '2.4.1' into a comparable tuple."""
+    return tuple(int(x) for x in re.findall(r"\d+", v))
+
+
+def torch_compat_matches(torch_compat: str, target_torch: str) -> bool:
+    """Check if target_torch satisfies a torch_compat specifier string.
+
+    Examples: ">=2.4", ">=2.4,<2.6", "<3.0"
+    Empty string always matches.
+    """
+    if not torch_compat:
+        return True
+    target = _parse_version(target_torch)
+    for spec in torch_compat.split(","):
+        spec = spec.strip()
+        if spec.startswith(">="):
+            if target < _parse_version(spec[2:]):
+                return False
+        elif spec.startswith(">"):
+            if target <= _parse_version(spec[1:]):
+                return False
+        elif spec.startswith("<="):
+            if target > _parse_version(spec[2:]):
+                return False
+        elif spec.startswith("<"):
+            if target >= _parse_version(spec[1:]):
+                return False
+        elif spec.startswith("=="):
+            if target != _parse_version(spec[2:]):
+                return False
+        elif spec.startswith("!="):
+            if target == _parse_version(spec[2:]):
+                return False
+    return True
 
 
 def cuda_matches(tag: str, style: str, target_cuda: str) -> bool:
@@ -260,6 +318,8 @@ def search_source(
 ) -> list[WheelMatch]:
     if source.source_type != "github" or not source.wheel_name:
         return []
+    if not torch_compat_matches(source.torch_compat, target_torch):
+        return []
     pattern = source.regex
     matches: list[WheelMatch] = []
     try:
@@ -301,6 +361,81 @@ def search_source(
                 )
             )
     return matches
+
+
+def search_source_explain(
+    client: httpx.Client,
+    source: Source,
+    target_torch: str,
+    target_cuda: str,
+    target_python: str,
+    target_platform: str,
+    cxx11_abi: str,
+) -> ExplainReport:
+    """Like search_source but collects detailed rejection reasons."""
+    pattern = source.regex
+    report = ExplainReport(
+        source=source,
+        regex_pattern=pattern.pattern,
+        releases_scanned=0,
+        assets_scanned=0,
+        rejected=[],
+        matched=[],
+    )
+    if source.source_type != "github" or not source.wheel_name:
+        return report
+    if not torch_compat_matches(source.torch_compat, target_torch):
+        report.rejected.append(RejectReason("", "torch_compat", f"source requires {source.torch_compat}, target={target_torch}"))
+        return report
+    try:
+        releases = fetch_releases(client, source.repo, source.scan_tags)
+    except Exception as e:
+        report.rejected.append(RejectReason("", "fetch", f"API error: {e}"))
+        return report
+    report.releases_scanned = len(releases)
+    for release in releases:
+        tag = release["tag_name"]
+        for asset in release.get("assets", []):
+            fname = asset["name"]
+            if not fname.endswith(".whl"):
+                continue
+            report.assets_scanned += 1
+            m = pattern.match(fname)
+            if not m:
+                report.rejected.append(RejectReason(fname, "regex"))
+                continue
+            g = m.groupdict()
+            if not cuda_matches(g["cuda"], source.cuda_style, target_cuda):
+                report.rejected.append(RejectReason(fname, "cuda", f"wheel={g['cuda']} target={target_cuda}"))
+                continue
+            if not torch_matches(g["torch"], target_torch, source.torch_format):
+                report.rejected.append(RejectReason(fname, "torch", f"wheel={g['torch']} target={target_torch}"))
+                continue
+            if not python_tag_matches(g["pytag"], target_python):
+                report.rejected.append(RejectReason(fname, "python", f"wheel={g['pytag']} target={target_python}"))
+                continue
+            if not platform_matches(g["platform"], target_platform):
+                report.rejected.append(RejectReason(fname, "platform", f"wheel={g['platform']} target={target_platform}"))
+                continue
+            if source.has_abi and "abi" in g and g["abi"] != cxx11_abi:
+                report.rejected.append(RejectReason(fname, "abi", f"wheel={g['abi']} target={cxx11_abi}"))
+                continue
+            report.matched.append(
+                WheelMatch(
+                    package=source.package,
+                    filename=fname,
+                    url=asset["browser_download_url"],
+                    version=g["version"],
+                    torch_version=g["torch"],
+                    cuda_tag=g["cuda"],
+                    python_tag=g["pytag"],
+                    platform_tag=g["platform"],
+                    source_desc=source.description,
+                    cxx11_abi=g.get("abi"),
+                    release_tag=tag,
+                )
+            )
+    return report
 
 
 def scan_available_combos(
@@ -351,6 +486,54 @@ def pick_best(matches: list[WheelMatch]) -> Optional[WheelMatch]:
 
     matches.sort(key=key, reverse=True)
     return matches[0]
+
+
+# ---------------------------------------------------------------------------
+# Doctor (verify resolved wheels)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DoctorResult:
+    """Result of verifying a resolved wheel."""
+    package: str
+    filename: str
+    url: str
+    url_ok: bool
+    status_code: int
+    content_length: Optional[int]
+    error: str = ""
+
+
+def doctor_check(
+    client: httpx.Client,
+    wheel_matches: dict[str, WheelMatch],
+) -> list[DoctorResult]:
+    """Verify resolved wheel URLs are accessible via HEAD requests."""
+    results: list[DoctorResult] = []
+    for name, m in wheel_matches.items():
+        try:
+            resp = client.head(m.url, follow_redirects=True, timeout=15)
+            length = resp.headers.get("content-length")
+            results.append(DoctorResult(
+                package=name,
+                filename=m.filename,
+                url=m.url,
+                url_ok=resp.status_code == 200,
+                status_code=resp.status_code,
+                content_length=int(length) if length else None,
+            ))
+        except Exception as e:
+            results.append(DoctorResult(
+                package=name,
+                filename=m.filename,
+                url=m.url,
+                url_ok=False,
+                status_code=0,
+                content_length=None,
+                error=str(e),
+            ))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +639,85 @@ def generate_toml(
 
 
 # ---------------------------------------------------------------------------
+# Lock / Update
+# ---------------------------------------------------------------------------
+
+LOCKFILE_NAME = "uvforge.lock.toml"
+
+
+def write_lockfile(
+    path: str,
+    torch_ver: str,
+    cuda_ver: str,
+    python_ver: str,
+    platform_tag: str,
+    cxx11_abi: str,
+    wheel_matches: dict[str, WheelMatch],
+) -> None:
+    """Write resolved wheels to a TOML lockfile for reproducible installs."""
+    lines = [
+        "# uvforge lockfile -- do not edit manually",
+        f'# generated = "{__import__("datetime").datetime.now(tz=__import__("datetime").timezone.utc).isoformat()}"',
+        "",
+        "[environment]",
+        f'torch = "{torch_ver}"',
+        f'cuda = "{cuda_ver}"',
+        f'python = "{python_ver}"',
+        f'platform = "{platform_tag}"',
+        f'cxx11_abi = "{cxx11_abi}"',
+        "",
+    ]
+    for name, m in wheel_matches.items():
+        lines.extend([
+            "[[wheels]]",
+            f'package = "{name}"',
+            f'version = "{m.version}"',
+            f'filename = "{m.filename}"',
+            f'url = "{unquote(m.url)}"',
+            f'source = "{m.source_desc}"',
+            f'release_tag = "{m.release_tag}"',
+            "",
+        ])
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+
+
+def read_lockfile(path: str) -> Optional[dict]:
+    """Read and parse a uvforge lockfile. Returns None if not found."""
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        return None
+
+
+def compare_lock(
+    old_lock: dict,
+    new_results: dict[str, WheelMatch],
+) -> list[str]:
+    """Compare old lockfile with new results, return list of change descriptions."""
+    changes: list[str] = []
+    old_wheels = {w["package"]: w for w in old_lock.get("wheels", [])}
+
+    # Check for updated or new packages
+    for name, m in new_results.items():
+        old = old_wheels.get(name)
+        if old is None:
+            changes.append(f"  [green]+[/green] {name} {m.version} (new)")
+        elif old["version"] != m.version:
+            changes.append(f"  [yellow]~[/yellow] {name} {old['version']} → {m.version}")
+        elif old["url"] != unquote(m.url):
+            changes.append(f"  [yellow]~[/yellow] {name} {m.version} (URL changed)")
+
+    # Check for removed packages
+    for name in old_wheels:
+        if name not in new_results:
+            changes.append(f"  [red]-[/red] {name} {old_wheels[name]['version']} (removed)")
+
+    return changes
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -487,6 +749,11 @@ def main() -> None:
     p.add_argument("--list", action="store_true", help="list all sources")
     p.add_argument("--available", action="store_true", help="show cuda/torch combos")
     p.add_argument("--all", action="store_true", help="show all matching wheels")
+    p.add_argument("--explain", action="store_true", help="show detailed matching diagnostics")
+    p.add_argument("--doctor", action="store_true", help="verify resolved wheel URLs are accessible")
+    p.add_argument("--lock", action="store_true", help="write resolved wheels to uvforge.lock.toml")
+    p.add_argument("--update", action="store_true", help="re-resolve and show changes vs lockfile")
+    p.add_argument("--lockfile", default=LOCKFILE_NAME, help=f"lockfile path (default: {LOCKFILE_NAME})")
     p.add_argument("--json", action="store_true", dest="as_json")
     p.add_argument("-V", "--version", action="version", version=f"%(prog)s {__import__('uvforge').__version__}")
 
@@ -590,14 +857,52 @@ def main() -> None:
         n = len(srcs)
         console.print(f"  [dim]{n} source{'s' if n > 1 else ''}[/dim] {pkg}", end="  ")
         matches: list[WheelMatch] = []
-        for src in srcs:
-            matches.extend(
-                search_source(client, src, torch_ver, cuda_ver, py_ver, plat, args.cxx11_abi)
-            )
+
+        if args.explain:
+            console.print()  # newline after package header
+            for src in srcs:
+                report = search_source_explain(
+                    client, src, torch_ver, cuda_ver, py_ver, plat, args.cxx11_abi
+                )
+                matches.extend(report.matched)
+                # Display explain report
+                console.print(f"\n    [bold cyan]Source:[/bold cyan] {src.description}")
+                console.print(f"    [dim]repo:[/dim]        {src.repo}")
+                console.print(f"    [dim]wheel_name:[/dim]  {src.wheel_name}")
+                console.print(f"    [dim]regex:[/dim]       {report.regex_pattern}")
+                compat_str = f"  torch_compat: {src.torch_compat}" if src.torch_compat else ""
+                console.print(f"    [dim]cuda_style:[/dim]  {src.cuda_style}  torch_format: {src.torch_format}  has_abi: {src.has_abi}{compat_str}")
+                console.print(f"    [dim]releases:[/dim]    {report.releases_scanned}  assets (wheels): {report.assets_scanned}")
+                console.print(f"    [dim]matched:[/dim]     {len(report.matched)}  rejected: {len(report.rejected)}")
+                if report.rejected:
+                    # Summarize rejections by stage
+                    by_stage: dict[str, int] = {}
+                    for r in report.rejected:
+                        by_stage[r.stage] = by_stage.get(r.stage, 0) + 1
+                    summary = "  ".join(f"{s}={c}" for s, c in sorted(by_stage.items()))
+                    console.print(f"    [dim]rejected by:[/dim] {summary}")
+                    # Show a few non-regex rejections with details (most useful)
+                    shown = 0
+                    for r in report.rejected:
+                        if r.stage != "regex" and r.detail and shown < 5:
+                            console.print(f"      [dim]✗ {r.stage}:[/dim] {r.filename}  ({r.detail})")
+                            shown += 1
+                if report.matched:
+                    for m in report.matched:
+                        console.print(f"      [green]✓[/green] {m.filename}  (v{m.version}, {m.release_tag})")
+        else:
+            for src in srcs:
+                matches.extend(
+                    search_source(client, src, torch_ver, cuda_ver, py_ver, plat, args.cxx11_abi)
+                )
+
         all_matches[pkg] = matches
 
         if not matches:
-            console.print("[red]no match[/red]")
+            if not args.explain:
+                console.print("[red]no match[/red]")
+            else:
+                console.print("\n    [red]no match across all sources[/red]")
             combos = scan_available_combos(client, srcs, plat)
             nearby = [
                 (c, tv) for c, tv in combos
@@ -610,8 +915,12 @@ def main() -> None:
 
         best = pick_best(matches)
         results[pkg] = best
-        console.print(f"[green]ok[/green] {best.filename}")
-        console.print(f"          [dim]via {best.source_desc} ({best.release_tag})[/dim]")
+        if args.explain:
+            console.print(f"\n    [bold green]Best pick:[/bold green] {best.filename}")
+            console.print(f"    [dim]version={best.version}  source={best.source_desc}  tag={best.release_tag}[/dim]")
+        else:
+            console.print(f"[green]ok[/green] {best.filename}")
+            console.print(f"          [dim]via {best.source_desc} ({best.release_tag})[/dim]")
 
     # -- Show all ----------------------------------------------------------
     if args.all and any(all_matches.values()):
@@ -634,6 +943,42 @@ def main() -> None:
         console.print("  [dim]•[/dim] Set [bold]GITHUB_TOKEN[/bold] to avoid API rate limits\n")
         client.close()
         sys.exit(1)
+
+    # -- Doctor (verify URLs) -----------------------------------------------
+    if args.doctor and results:
+        console.print("\n[bold]Doctor:[/bold] verifying wheel URLs...")
+        checks = doctor_check(client, results)
+        all_ok = True
+        for c in checks:
+            if c.url_ok:
+                size = f"  ({c.content_length / 1024 / 1024:.1f} MB)" if c.content_length else ""
+                console.print(f"  [green]✓[/green] {c.package}: {c.filename}{size}")
+            else:
+                all_ok = False
+                detail = c.error or f"HTTP {c.status_code}"
+                console.print(f"  [red]✗[/red] {c.package}: {c.filename}  ({detail})")
+        if all_ok:
+            console.print("  [green]All wheels verified.[/green]")
+        else:
+            console.print("  [yellow]Some wheels could not be verified.[/yellow]")
+
+    # -- Lock / Update -----------------------------------------------------
+    if args.update and results:
+        old_lock = read_lockfile(args.lockfile)
+        if old_lock is None:
+            console.print(f"\n[yellow]No lockfile found at {args.lockfile}.[/yellow] Use --lock to create one.")
+        else:
+            changes = compare_lock(old_lock, results)
+            if changes:
+                console.print(f"\n[bold]Changes vs {args.lockfile}:[/bold]")
+                for c in changes:
+                    console.print(c)
+            else:
+                console.print(f"\n[green]No changes vs {args.lockfile}.[/green]")
+
+    if args.lock and results:
+        write_lockfile(args.lockfile, torch_ver, cuda_ver, py_ver, plat, args.cxx11_abi, results)
+        console.print(f"\n[bold green]Lockfile written:[/bold green] {args.lockfile}")
 
     # -- JSON output -------------------------------------------------------
     if args.as_json:
