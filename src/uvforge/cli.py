@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import unquote
 
 import httpx
@@ -342,6 +342,25 @@ def _check_wheel(
     return g, None
 
 
+def _build_wheel_match(
+    source: Source, fname: str, asset: dict, g: dict, tag: str,
+) -> WheelMatch:
+    """Construct a WheelMatch from matched regex groups and release metadata."""
+    return WheelMatch(
+        package=source.package,
+        filename=fname,
+        url=asset["browser_download_url"],
+        version=g["version"],
+        torch_version=g["torch"],
+        cuda_tag=g["cuda"],
+        python_tag=g["pytag"],
+        platform_tag=g["platform"],
+        source_desc=source.description,
+        cxx11_abi=g.get("abi"),
+        release_tag=tag,
+    )
+
+
 def search_source(
     client: httpx.Client,
     source: Source,
@@ -372,21 +391,7 @@ def search_source(
             )
             if g is None:
                 continue
-            matches.append(
-                WheelMatch(
-                    package=source.package,
-                    filename=fname,
-                    url=asset["browser_download_url"],
-                    version=g["version"],
-                    torch_version=g["torch"],
-                    cuda_tag=g["cuda"],
-                    python_tag=g["pytag"],
-                    platform_tag=g["platform"],
-                    source_desc=source.description,
-                    cxx11_abi=g.get("abi"),
-                    release_tag=tag,
-                )
-            )
+            matches.append(_build_wheel_match(source, fname, asset, g, tag))
     return matches
 
 
@@ -435,21 +440,7 @@ def search_source_explain(
                 if len(report.rejected) < MAX_REJECTIONS:
                     report.rejected.append(RejectReason(fname, rejection[0], rejection[1]))
                 continue
-            report.matched.append(
-                WheelMatch(
-                    package=source.package,
-                    filename=fname,
-                    url=asset["browser_download_url"],
-                    version=g["version"],
-                    torch_version=g["torch"],
-                    cuda_tag=g["cuda"],
-                    python_tag=g["pytag"],
-                    platform_tag=g["platform"],
-                    source_desc=source.description,
-                    cxx11_abi=g.get("abi"),
-                    release_tag=tag,
-                )
-            )
+            report.matched.append(_build_wheel_match(source, fname, asset, g, tag))
     return report
 
 
@@ -520,11 +511,12 @@ class DoctorResult:
     error: str = ""
 
 
-def _doctor_check_one(name: str, m: WheelMatch) -> DoctorResult:
-    """Verify a single wheel URL via HEAD request (thread-safe)."""
+def _doctor_check_one(
+    client: httpx.Client, name: str, m: WheelMatch,
+) -> DoctorResult:
+    """Verify a single wheel URL via HEAD request."""
     try:
-        with httpx.Client(follow_redirects=True) as c:
-            resp = c.head(m.url, timeout=15)
+        resp = client.head(m.url, follow_redirects=True, timeout=15)
         length = resp.headers.get("content-length")
         return DoctorResult(
             package=name,
@@ -552,13 +544,16 @@ def doctor_check(
     """Verify resolved wheel URLs are accessible via concurrent HEAD requests."""
     if not wheel_matches:
         return []
-    with ThreadPoolExecutor(max_workers=min(4, len(wheel_matches))) as pool:
-        futures = {
-            pool.submit(_doctor_check_one, name, m): name
-            for name, m in wheel_matches.items()
-        }
-        results = [future.result() for future in as_completed(futures)]
-    # Return in original order
+    client = httpx.Client(follow_redirects=True)
+    try:
+        with ThreadPoolExecutor(max_workers=min(4, len(wheel_matches))) as pool:
+            futures = {
+                pool.submit(_doctor_check_one, client, name, m): name
+                for name, m in wheel_matches.items()
+            }
+            results = [future.result() for future in as_completed(futures)]
+    finally:
+        client.close()
     order = list(wheel_matches.keys())
     results.sort(key=lambda r: order.index(r.package))
     return results
@@ -722,7 +717,7 @@ def read_lockfile(path: str) -> Optional[dict]:
 @dataclass
 class LockChange:
     """A single difference between old lockfile and new resolution."""
-    kind: str  # "added" | "updated" | "removed" | "url_changed"
+    kind: Literal["added", "updated", "removed", "url_changed"]
     package: str
     old_version: Optional[str] = None
     new_version: Optional[str] = None
@@ -760,9 +755,8 @@ def format_lock_change(change: LockChange) -> str:
         return f"  [yellow]~[/yellow] {change.package} {change.old_version} → {change.new_version}"
     if change.kind == "url_changed":
         return f"  [yellow]~[/yellow] {change.package} {change.new_version} (URL changed)"
-    if change.kind == "removed":
-        return f"  [red]-[/red] {change.package} {change.old_version} (removed)"
-    return f"  ? {change.package}"
+    # kind == "removed"
+    return f"  [red]-[/red] {change.package} {change.old_version} (removed)"
 
 
 # ---------------------------------------------------------------------------
