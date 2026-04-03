@@ -572,7 +572,7 @@ def main() -> None:
     py_ver = args.python or detect_python()
 
     # -- Main search -------------------------------------------------------
-    console.print(f"\n[bold]uvforge[/bold] -- searching prebuilt wheels")
+    console.print("\n[bold]uvforge[/bold] -- searching prebuilt wheels")
     console.print(
         f"  torch={torch_ver}  cuda={cuda_ver}  python={py_ver}  "
         f"platform={plat}  cxx11abi={args.cxx11_abi}\n"
@@ -653,7 +653,7 @@ def main() -> None:
     # -- TOML output -------------------------------------------------------
     toml = generate_toml(args.project, py_ver, torch_ver, cuda_ver, results)
 
-    console.print(f"\n[bold green]pyproject.toml[/bold green]\n")
+    console.print("\n[bold green]pyproject.toml[/bold green]\n")
     if args.output:
         with open(args.output, "w") as f:
             f.write(toml)
