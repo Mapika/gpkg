@@ -26,14 +26,15 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv sync
       - name: Validate registry TOML parses
-        run: uv run python -c "
-          import tomllib;
-          data = tomllib.load(open('src/uvforge/registry.toml', 'rb'));
-          sources = data['sources'];
-          print(f'{len(sources)} sources loaded');
+        run: |
+          uv run python -c "
+          import tomllib
+          data = tomllib.load(open('src/uvforge/registry.toml', 'rb'))
+          sources = data['sources']
+          print(f'{len(sources)} sources loaded')
           for s in sources:
-            assert 'package' in s, f'missing package in {s}';
-            assert 'type' in s, f'missing type in {s}';
+              assert 'package' in s, f'missing package in {s}'
+              assert 'type' in s, f'missing type in {s}'
           print('All sources valid')
           "
       - name: Check GitHub repos exist
@@ -41,12 +42,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           uv run python -c "
-          import tomllib, httpx
+          import tomllib, httpx, os
           data = tomllib.load(open('src/uvforge/registry.toml', 'rb'))
-          client = httpx.Client(headers={'Authorization': 'Bearer ${{ secrets.GITHUB_TOKEN }}'})
+          token = os.environ.get('GITHUB_TOKEN', '')
+          client = httpx.Client(headers={'Authorization': f'Bearer {token}'})
           for s in data['sources']:
-            if s.get('type') == 'github' and s.get('repo'):
-              resp = client.head(f'https://api.github.com/repos/{s[\"repo\"]}')
-              status = '  ok' if resp.status_code == 200 else 'DEAD'
-              print(f'  {status}  {s[\"repo\"]:50s}  ({s[\"package\"]})')
+              if s.get('type') == 'github' and s.get('repo'):
+                  resp = client.head(f'https://api.github.com/repos/{s[\"repo\"]}')
+                  status = '  ok' if resp.status_code == 200 else 'DEAD'
+                  print(f'  {status}  {s[\"repo\"]:50s}  ({s[\"package\"]})')
           "
