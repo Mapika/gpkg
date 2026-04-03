@@ -490,6 +490,13 @@ def main() -> None:
     p.add_argument("--json", action="store_true", dest="as_json")
     p.add_argument("-V", "--version", action="version", version=f"%(prog)s {__import__('uvforge').__version__}")
 
+    # Tab completion (optional: pip install argcomplete)
+    try:
+        import argcomplete
+        argcomplete.autocomplete(p)
+    except ImportError:
+        pass
+
     args = p.parse_args()
     client = httpx.Client(headers=get_headers(), timeout=30, follow_redirects=True)
 
@@ -621,7 +628,10 @@ def main() -> None:
         console.print(t)
 
     if not results:
-        console.print("\n[red]No wheels resolved.[/red] Try --available to see what exists.")
+        console.print("\n[red]No wheels resolved.[/red]")
+        console.print("  [dim]•[/dim] Try [bold]--available[/bold] to see what torch/cuda combos exist")
+        console.print("  [dim]•[/dim] Need to compile? [bold]source build-env.sh[/bold] for 5-10x faster builds")
+        console.print("  [dim]•[/dim] Set [bold]GITHUB_TOKEN[/bold] to avoid API rate limits\n")
         client.close()
         sys.exit(1)
 

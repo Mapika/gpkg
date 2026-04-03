@@ -1,4 +1,5 @@
 # uvforge
+[![CI](https://github.com/Mapika/uvforge/actions/workflows/ci.yml/badge.svg)](https://github.com/Mapika/uvforge/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/uvforge)](https://pypi.org/project/uvforge/) [![Python](https://img.shields.io/pypi/pyversions/uvforge)](https://pypi.org/project/uvforge/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Stop compiling CUDA extensions. Find prebuilt wheels in seconds.
 
