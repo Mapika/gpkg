@@ -1,6 +1,5 @@
 """Tests for uvforge matching logic."""
 
-import os
 import pytest
 
 from uvforge.cli import (
@@ -8,6 +7,7 @@ from uvforge.cli import (
     compare_lock,
     cuda_matches,
     ExplainReport,
+    LockChange,
     normalize_cuda,
     pick_best,
     platform_matches,
@@ -282,7 +282,9 @@ class TestLockfile:
         new_matches = {"flash-attn": self._make_match("flash-attn", "2.9.0")}
         changes = compare_lock(old, new_matches)
         assert len(changes) == 1
-        assert "2.8.3" in changes[0] and "2.9.0" in changes[0]
+        assert changes[0].kind == "updated"
+        assert changes[0].old_version == "2.8.3"
+        assert changes[0].new_version == "2.9.0"
 
     def test_compare_added_removed(self, tmp_path):
         old_matches = {"flash-attn": self._make_match("flash-attn", "2.8.3")}
@@ -293,9 +295,12 @@ class TestLockfile:
         new_matches = {"mamba-ssm": self._make_match("mamba-ssm", "1.0.0")}
         changes = compare_lock(old, new_matches)
         assert len(changes) == 2  # one added, one removed
-        texts = " ".join(changes)
-        assert "mamba-ssm" in texts
-        assert "flash-attn" in texts
+        kinds = {c.kind for c in changes}
+        assert "added" in kinds
+        assert "removed" in kinds
+        packages = {c.package for c in changes}
+        assert "mamba-ssm" in packages
+        assert "flash-attn" in packages
 
 
 # -- Explain report --------------------------------------------------------

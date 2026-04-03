@@ -9,7 +9,9 @@ import platform as platform_mod
 import re
 import sys
 import textwrap
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
@@ -154,8 +156,10 @@ class WheelMatch:
 class RejectReason:
     """Why a candidate wheel was rejected."""
     filename: str
-    stage: str  # "regex", "cuda", "torch", "python", "platform", "abi"
+    stage: str  # "regex" | "cuda" | "torch" | "python" | "platform" | "abi" | "torch_compat" | "fetch"
     detail: str = ""
+
+MAX_REJECTIONS = 500
 
 
 @dataclass
@@ -307,6 +311,37 @@ def fetch_releases(client: httpx.Client, repo: str, count: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _check_wheel(
+    fname: str,
+    source: Source,
+    pattern: re.Pattern,
+    target_torch: str,
+    target_cuda: str,
+    target_python: str,
+    target_platform: str,
+    cxx11_abi: str,
+) -> tuple[Optional[dict], Optional[tuple[str, str]]]:
+    """Match a single wheel filename against all criteria.
+
+    Returns (groupdict, None) on match, or (None, (stage, detail)) on rejection.
+    """
+    m = pattern.match(fname)
+    if not m:
+        return None, ("regex", "")
+    g = m.groupdict()
+    if not cuda_matches(g["cuda"], source.cuda_style, target_cuda):
+        return None, ("cuda", f"wheel={g['cuda']} target={target_cuda}")
+    if not torch_matches(g["torch"], target_torch, source.torch_format):
+        return None, ("torch", f"wheel={g['torch']} target={target_torch}")
+    if not python_tag_matches(g["pytag"], target_python):
+        return None, ("python", f"wheel={g['pytag']} target={target_python}")
+    if not platform_matches(g["platform"], target_platform):
+        return None, ("platform", f"wheel={g['platform']} target={target_platform}")
+    if source.has_abi and "abi" in g and g["abi"] != cxx11_abi:
+        return None, ("abi", f"wheel={g['abi']} target={cxx11_abi}")
+    return g, None
+
+
 def search_source(
     client: httpx.Client,
     source: Source,
@@ -331,19 +366,11 @@ def search_source(
         tag = release["tag_name"]
         for asset in release.get("assets", []):
             fname = asset["name"]
-            m = pattern.match(fname)
-            if not m:
-                continue
-            g = m.groupdict()
-            if not cuda_matches(g["cuda"], source.cuda_style, target_cuda):
-                continue
-            if not torch_matches(g["torch"], target_torch, source.torch_format):
-                continue
-            if not python_tag_matches(g["pytag"], target_python):
-                continue
-            if not platform_matches(g["platform"], target_platform):
-                continue
-            if source.has_abi and "abi" in g and g["abi"] != cxx11_abi:
+            g, _ = _check_wheel(
+                fname, source, pattern,
+                target_torch, target_cuda, target_python, target_platform, cxx11_abi,
+            )
+            if g is None:
                 continue
             matches.append(
                 WheelMatch(
@@ -400,25 +427,13 @@ def search_source_explain(
             if not fname.endswith(".whl"):
                 continue
             report.assets_scanned += 1
-            m = pattern.match(fname)
-            if not m:
-                report.rejected.append(RejectReason(fname, "regex"))
-                continue
-            g = m.groupdict()
-            if not cuda_matches(g["cuda"], source.cuda_style, target_cuda):
-                report.rejected.append(RejectReason(fname, "cuda", f"wheel={g['cuda']} target={target_cuda}"))
-                continue
-            if not torch_matches(g["torch"], target_torch, source.torch_format):
-                report.rejected.append(RejectReason(fname, "torch", f"wheel={g['torch']} target={target_torch}"))
-                continue
-            if not python_tag_matches(g["pytag"], target_python):
-                report.rejected.append(RejectReason(fname, "python", f"wheel={g['pytag']} target={target_python}"))
-                continue
-            if not platform_matches(g["platform"], target_platform):
-                report.rejected.append(RejectReason(fname, "platform", f"wheel={g['platform']} target={target_platform}"))
-                continue
-            if source.has_abi and "abi" in g and g["abi"] != cxx11_abi:
-                report.rejected.append(RejectReason(fname, "abi", f"wheel={g['abi']} target={cxx11_abi}"))
+            g, rejection = _check_wheel(
+                fname, source, pattern,
+                target_torch, target_cuda, target_python, target_platform, cxx11_abi,
+            )
+            if g is None:
+                if len(report.rejected) < MAX_REJECTIONS:
+                    report.rejected.append(RejectReason(fname, rejection[0], rejection[1]))
                 continue
             report.matched.append(
                 WheelMatch(
@@ -505,34 +520,47 @@ class DoctorResult:
     error: str = ""
 
 
+def _doctor_check_one(name: str, m: WheelMatch) -> DoctorResult:
+    """Verify a single wheel URL via HEAD request (thread-safe)."""
+    try:
+        with httpx.Client(follow_redirects=True) as c:
+            resp = c.head(m.url, timeout=15)
+        length = resp.headers.get("content-length")
+        return DoctorResult(
+            package=name,
+            filename=m.filename,
+            url=m.url,
+            url_ok=resp.status_code == 200,
+            status_code=resp.status_code,
+            content_length=int(length) if length else None,
+        )
+    except Exception as e:
+        return DoctorResult(
+            package=name,
+            filename=m.filename,
+            url=m.url,
+            url_ok=False,
+            status_code=0,
+            content_length=None,
+            error=str(e),
+        )
+
+
 def doctor_check(
-    client: httpx.Client,
     wheel_matches: dict[str, WheelMatch],
 ) -> list[DoctorResult]:
-    """Verify resolved wheel URLs are accessible via HEAD requests."""
-    results: list[DoctorResult] = []
-    for name, m in wheel_matches.items():
-        try:
-            resp = client.head(m.url, follow_redirects=True, timeout=15)
-            length = resp.headers.get("content-length")
-            results.append(DoctorResult(
-                package=name,
-                filename=m.filename,
-                url=m.url,
-                url_ok=resp.status_code == 200,
-                status_code=resp.status_code,
-                content_length=int(length) if length else None,
-            ))
-        except Exception as e:
-            results.append(DoctorResult(
-                package=name,
-                filename=m.filename,
-                url=m.url,
-                url_ok=False,
-                status_code=0,
-                content_length=None,
-                error=str(e),
-            ))
+    """Verify resolved wheel URLs are accessible via concurrent HEAD requests."""
+    if not wheel_matches:
+        return []
+    with ThreadPoolExecutor(max_workers=min(4, len(wheel_matches))) as pool:
+        futures = {
+            pool.submit(_doctor_check_one, name, m): name
+            for name, m in wheel_matches.items()
+        }
+        results = [future.result() for future in as_completed(futures)]
+    # Return in original order
+    order = list(wheel_matches.keys())
+    results.sort(key=lambda r: order.index(r.package))
     return results
 
 
@@ -657,7 +685,7 @@ def write_lockfile(
     """Write resolved wheels to a TOML lockfile for reproducible installs."""
     lines = [
         "# uvforge lockfile -- do not edit manually",
-        f'# generated = "{__import__("datetime").datetime.now(tz=__import__("datetime").timezone.utc).isoformat()}"',
+        f'# generated = "{datetime.now(tz=timezone.utc).isoformat()}"',
         "",
         "[environment]",
         f'torch = "{torch_ver}"',
@@ -691,30 +719,50 @@ def read_lockfile(path: str) -> Optional[dict]:
         return None
 
 
+@dataclass
+class LockChange:
+    """A single difference between old lockfile and new resolution."""
+    kind: str  # "added" | "updated" | "removed" | "url_changed"
+    package: str
+    old_version: Optional[str] = None
+    new_version: Optional[str] = None
+
+
 def compare_lock(
     old_lock: dict,
     new_results: dict[str, WheelMatch],
-) -> list[str]:
-    """Compare old lockfile with new results, return list of change descriptions."""
-    changes: list[str] = []
+) -> list[LockChange]:
+    """Compare old lockfile with new results, return list of changes."""
+    changes: list[LockChange] = []
     old_wheels = {w["package"]: w for w in old_lock.get("wheels", [])}
 
-    # Check for updated or new packages
     for name, m in new_results.items():
         old = old_wheels.get(name)
         if old is None:
-            changes.append(f"  [green]+[/green] {name} {m.version} (new)")
+            changes.append(LockChange("added", name, new_version=m.version))
         elif old["version"] != m.version:
-            changes.append(f"  [yellow]~[/yellow] {name} {old['version']} → {m.version}")
+            changes.append(LockChange("updated", name, old["version"], m.version))
         elif old["url"] != unquote(m.url):
-            changes.append(f"  [yellow]~[/yellow] {name} {m.version} (URL changed)")
+            changes.append(LockChange("url_changed", name, new_version=m.version))
 
-    # Check for removed packages
     for name in old_wheels:
         if name not in new_results:
-            changes.append(f"  [red]-[/red] {name} {old_wheels[name]['version']} (removed)")
+            changes.append(LockChange("removed", name, old_version=old_wheels[name]["version"]))
 
     return changes
+
+
+def format_lock_change(change: LockChange) -> str:
+    """Format a LockChange for Rich console output."""
+    if change.kind == "added":
+        return f"  [green]+[/green] {change.package} {change.new_version} (new)"
+    if change.kind == "updated":
+        return f"  [yellow]~[/yellow] {change.package} {change.old_version} → {change.new_version}"
+    if change.kind == "url_changed":
+        return f"  [yellow]~[/yellow] {change.package} {change.new_version} (URL changed)"
+    if change.kind == "removed":
+        return f"  [red]-[/red] {change.package} {change.old_version} (removed)"
+    return f"  ? {change.package}"
 
 
 # ---------------------------------------------------------------------------
@@ -947,7 +995,7 @@ def main() -> None:
     # -- Doctor (verify URLs) -----------------------------------------------
     if args.doctor and results:
         console.print("\n[bold]Doctor:[/bold] verifying wheel URLs...")
-        checks = doctor_check(client, results)
+        checks = doctor_check(results)
         all_ok = True
         for c in checks:
             if c.url_ok:
@@ -972,7 +1020,7 @@ def main() -> None:
             if changes:
                 console.print(f"\n[bold]Changes vs {args.lockfile}:[/bold]")
                 for c in changes:
-                    console.print(c)
+                    console.print(format_lock_change(c))
             else:
                 console.print(f"\n[green]No changes vs {args.lockfile}.[/green]")
 
