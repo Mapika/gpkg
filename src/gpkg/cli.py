@@ -783,7 +783,7 @@ def main() -> None:
                 if not resolve_result.from_cache:
                     console.print(format_resolve_result(resolve_result))
                 else:
-                    console.print(f"\n  [green]✓[/green] Known compatible set")
+                    console.print("\n  [green]✓[/green] Known compatible set")
                 results = {m.package: m for m in resolve_result.chosen.matches}
 
     # -- Show all matches --------------------------------------------------

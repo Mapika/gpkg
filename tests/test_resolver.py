@@ -487,3 +487,76 @@ def test_build_report_format():
     assert report["success"] is True
     assert report["build_time_seconds"] == 847
     assert report["gpkg_version"] == "0.5.0"
+
+
+def test_full_pipeline_mamba_stack(tmp_path):
+    """End-to-end: resolve the mamba stack (flash-attn + causal-conv1d + mamba-ssm)."""
+    from gpkg.resolver import resolve, ResolveResult, read_compat_cache
+    from gpkg.matching import WheelMatch
+    from gpkg.registry import Source, RequiresBlock
+
+    sources = [
+        Source(
+            package="flash-attn", description="t", source_type="github",
+            requires=[RequiresBlock(["2.8.3"], ["torch>=2.0", "einops", "packaging"])],
+        ),
+        Source(
+            package="causal-conv1d", description="t", source_type="github",
+            requires=[RequiresBlock(["1.5.0"], ["torch>=2.0", "packaging"])],
+        ),
+        Source(
+            package="mamba-ssm", description="t", source_type="github",
+            requires=[RequiresBlock(["2.2.4"], ["torch>=2.0", "causal-conv1d>=1.4.0", "packaging"])],
+        ),
+    ]
+
+    def make(pkg, ver):
+        return WheelMatch(
+            pkg, f"{pkg}-{ver}.whl", f"https://wheels.mapika.dev/{pkg}/{pkg}-{ver}.whl",
+            ver, "2.11", "128", "cp312-cp312", "linux_x86_64",
+            f"{pkg} — gpkg hosted registry", "TRUE", "",
+        )
+
+    all_versions = {
+        "flash-attn": [make("flash-attn", "2.8.3"), make("flash-attn", "2.8.2")],
+        "causal-conv1d": [make("causal-conv1d", "1.5.0"), make("causal-conv1d", "1.4.0")],
+        "mamba-ssm": [make("mamba-ssm", "2.2.4"), make("mamba-ssm", "2.2.3")],
+    }
+    env = {"torch": "2.11", "cuda": "128", "python": "3.12", "platform": "linux_x86_64"}
+
+    result = resolve(
+        all_versions=all_versions,
+        env=env,
+        sources=sources,
+        client=None,
+        skip_trial=True,
+        cache_dir=tmp_path,
+    )
+
+    assert result is not None
+    assert not result.from_cache
+    assert len(result.chosen.matches) == 3
+    assert result.chosen.conflicts == []
+
+    # Should pick newest versions (no conflicts in this stack)
+    versions = {m.package: m.version for m in result.chosen.matches}
+    assert versions["flash-attn"] == "2.8.3"
+    assert versions["causal-conv1d"] == "1.5.0"
+    assert versions["mamba-ssm"] == "2.2.4"
+
+    # Should have cached the result
+    cached = read_compat_cache(["flash-attn", "causal-conv1d", "mamba-ssm"], env, cache_dir=tmp_path)
+    assert cached is not None
+    assert cached.status == "user-resolved"
+
+    # Re-resolve should hit cache
+    result2 = resolve(
+        all_versions=all_versions,
+        env=env,
+        sources=sources,
+        client=None,
+        skip_trial=True,
+        cache_dir=tmp_path,
+    )
+    assert result2 is not None
+    assert result2.from_cache

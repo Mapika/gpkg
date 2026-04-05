@@ -338,13 +338,14 @@ def lookup_known_good(
     packages: list[str],
     env: dict,
     client=None,
+    cache_dir: Optional[Path] = None,
 ) -> Optional[CompatSet]:
     """Check local cache first; if miss and client provided, try hosted registry.
 
     Falls back to https://wheels.mapika.dev/compat/<key>.toml on cache miss.
     Caches locally on a hosted hit.
     """
-    local = read_compat_cache(packages, env)
+    local = read_compat_cache(packages, env, cache_dir=cache_dir)
     if local is not None:
         return local
 
@@ -373,7 +374,7 @@ def lookup_known_good(
             status=resolution.get("status", ""),
             resolved_at=resolution.get("resolved_at", ""),
         )
-        write_compat_cache(packages, env, compat)
+        write_compat_cache(packages, env, compat, cache_dir=cache_dir)
         return compat
     except Exception:
         return None
@@ -680,7 +681,7 @@ def resolve(
         return None
 
     # 1. Known-good cache lookup
-    cached = lookup_known_good(packages, env, client)
+    cached = lookup_known_good(packages, env, client, cache_dir=cache_dir)
     if cached is not None:
         cache_matches = []
         for pkg_info in cached.packages:
