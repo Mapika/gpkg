@@ -647,3 +647,119 @@ def trial_resolve(combo: Combo, timeout: int = 30) -> bool:
         return True
     finally:
         Path(req_file).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Main resolver pipeline
+# ---------------------------------------------------------------------------
+
+
+def resolve(
+    all_versions: dict[str, list[WheelMatch]],
+    env: dict[str, str],
+    sources: list[Source],
+    client=None,
+    *,
+    skip_trial: bool = False,
+    max_per_package: int = 5,
+    max_trial: int = 3,
+    cache_dir: Optional[Path] = None,
+) -> Optional[ResolveResult]:
+    """Main resolver pipeline.
+
+    1. Check known-good cache
+    2. Generate candidate combos (GPU-pruned cartesian product)
+    3. Fetch metadata + detect conflicts for each combo
+    4. Score and rank
+    5. Trial-resolve top candidates with uv
+    6. Cache the result
+    """
+    packages = sorted(all_versions.keys())
+
+    if not packages:
+        return None
+
+    # 1. Known-good cache lookup
+    cached = lookup_known_good(packages, env, client)
+    if cached is not None:
+        cache_matches = []
+        for pkg_info in cached.packages:
+            pkg_name = pkg_info["package"]
+            if pkg_name in all_versions:
+                for m in all_versions[pkg_name]:
+                    if m.version == pkg_info["version"]:
+                        cache_matches.append(m)
+                        break
+
+        if len(cache_matches) == len(packages):
+            key = compat_cache_key(
+                packages, env["torch"], env["cuda"], env["python"], env["platform"]
+            )
+            return ResolveResult(
+                chosen=Combo(matches=cache_matches, conflicts=[], score=0.0),
+                alternatives=[],
+                from_cache=True,
+                cache_key=key,
+            )
+
+    # 2. Generate candidates
+    combos = generate_candidates(all_versions, max_per_package)
+
+    if not combos:
+        return None
+
+    # 3. Fetch metadata + detect conflicts for each combo
+    for combo in combos:
+        metadata_list: list[PackageMetadata] = []
+        for match in combo.matches:
+            requires = fetch_metadata(match, sources, client)
+            metadata_list.append(PackageMetadata(
+                package=match.package,
+                version=match.version,
+                requires_dist=requires or [],
+            ))
+
+        combo.conflicts = check_conflicts(metadata_list)
+        combo.score = score_combo(combo.matches, combo.conflicts)
+
+    # 4. Sort by score (highest first)
+    combos.sort(key=lambda c: c.score, reverse=True)
+
+    # 5. Trial resolution (top N zero-conflict combos)
+    if not skip_trial:
+        verified: list[Combo] = []
+        for combo in combos:
+            if combo.conflicts:
+                continue
+            if trial_resolve(combo):
+                verified.append(combo)
+            if len(verified) >= max_trial:
+                break
+
+        if verified:
+            combos = verified + [c for c in combos if c not in verified]
+
+    # 6. Cache the winner
+    winner = combos[0]
+    cache_key = compat_cache_key(
+        packages, env["torch"], env["cuda"], env["python"], env["platform"]
+    )
+
+    if not winner.conflicts:
+        compat = CompatSet(
+            packages=[
+                {"package": m.package, "version": m.version, "url": m.url}
+                for m in winner.matches
+            ],
+            constraints={},
+            status="user-resolved",
+            resolved_at=datetime.now(timezone.utc).isoformat(),
+        )
+        write_compat_cache(packages, env, compat, cache_dir=cache_dir)
+
+    return ResolveResult(
+        chosen=winner,
+        alternatives=combos[1:3],
+        from_cache=False,
+        cache_key=cache_key,
+    )

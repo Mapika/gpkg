@@ -352,3 +352,69 @@ def test_trial_resolve_builds_requirements():
     reqs = _build_trial_requirements(combo)
     assert "flash-attn==2.8.3" in reqs
     assert "mamba-ssm==2.2.4" in reqs
+
+
+def test_resolve_single_package_no_conflicts(tmp_path):
+    """Single package resolves trivially."""
+    from gpkg.resolver import resolve, ResolveResult
+    from gpkg.matching import WheelMatch
+
+    match = WheelMatch(
+        "flash-attn", "a.whl", "https://example.com/a.whl", "2.8.3",
+        "2.11", "128", "cp312-cp312", "linux_x86_64", "test", None, "",
+    )
+    all_versions = {"flash-attn": [match]}
+    env = {"torch": "2.11", "cuda": "128", "python": "3.12", "platform": "linux_x86_64"}
+
+    result = resolve(
+        all_versions=all_versions,
+        env=env,
+        sources=[],
+        client=None,
+        skip_trial=True,
+        cache_dir=tmp_path,
+    )
+
+    assert result is not None
+    assert len(result.chosen.matches) == 1
+    assert result.chosen.matches[0].package == "flash-attn"
+    assert result.chosen.conflicts == []
+
+
+def test_resolve_detects_conflict(tmp_path):
+    """Resolver detects numpy conflict between packages."""
+    from gpkg.resolver import resolve
+    from gpkg.matching import WheelMatch
+    from gpkg.registry import Source, RequiresBlock
+
+    sources = [
+        Source(
+            package="pkg-a", description="t", source_type="github",
+            requires=[RequiresBlock(["1.0"], ["numpy>=2.0"])],
+        ),
+        Source(
+            package="pkg-b", description="t", source_type="github",
+            requires=[RequiresBlock(["1.0"], ["numpy<2.0"])],
+        ),
+    ]
+
+    all_versions = {
+        "pkg-a": [WheelMatch("pkg-a", "a.whl", "", "1.0", "2.11", "128",
+                              "cp312-cp312", "linux_x86_64", "t", None, "")],
+        "pkg-b": [WheelMatch("pkg-b", "b.whl", "", "1.0", "2.11", "128",
+                              "cp312-cp312", "linux_x86_64", "t", None, "")],
+    }
+    env = {"torch": "2.11", "cuda": "128", "python": "3.12", "platform": "linux_x86_64"}
+
+    result = resolve(
+        all_versions=all_versions,
+        env=env,
+        sources=sources,
+        client=None,
+        skip_trial=True,
+        cache_dir=tmp_path,
+    )
+
+    assert result is not None
+    assert len(result.chosen.conflicts) > 0
+    assert result.chosen.conflicts[0].dependency == "numpy"
