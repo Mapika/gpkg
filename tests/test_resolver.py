@@ -172,3 +172,112 @@ def test_search_all_versions_returns_multiple():
     assert len(matches_by_pkg["flash-attn"]) == 2
     assert matches_by_pkg["flash-attn"][0].version == "2.8.3"
     assert matches_by_pkg["flash-attn"][1].version == "2.8.2"
+
+
+def test_compat_cache_key_deterministic():
+    """Same packages + env always produce the same cache key."""
+    from gpkg.resolver import compat_cache_key
+
+    key1 = compat_cache_key(
+        ["flash-attn", "mamba-ssm"], "2.11", "128", "3.12", "linux_x86_64"
+    )
+    key2 = compat_cache_key(
+        ["mamba-ssm", "flash-attn"], "2.11", "128", "3.12", "linux_x86_64"
+    )
+    assert key1 == key2  # order-independent
+
+
+def test_compat_cache_key_differs_by_env():
+    """Different environments produce different keys."""
+    from gpkg.resolver import compat_cache_key
+
+    key1 = compat_cache_key(["flash-attn"], "2.11", "128", "3.12", "linux_x86_64")
+    key2 = compat_cache_key(["flash-attn"], "2.10", "128", "3.12", "linux_x86_64")
+    assert key1 != key2
+
+
+def test_compat_cache_roundtrip(tmp_path):
+    """Write and read back a compat cache entry."""
+    from gpkg.resolver import write_compat_cache, read_compat_cache, CompatSet
+
+    compat = CompatSet(
+        packages=[
+            {"package": "flash-attn", "version": "2.8.3", "url": "https://example.com/a.whl"},
+        ],
+        constraints={"numpy": ">=2.0,<3.0"},
+        status="user-resolved",
+        resolved_at="2026-04-04T15:30:00Z",
+    )
+    env = {"torch": "2.11", "cuda": "128", "python": "3.12", "platform": "linux_x86_64"}
+
+    write_compat_cache(["flash-attn"], env, compat, cache_dir=tmp_path)
+    loaded = read_compat_cache(["flash-attn"], env, cache_dir=tmp_path)
+
+    assert loaded is not None
+    assert loaded.status == "user-resolved"
+    assert loaded.packages[0]["package"] == "flash-attn"
+    assert loaded.constraints["numpy"] == ">=2.0,<3.0"
+
+
+def test_compat_cache_miss(tmp_path):
+    """Cache miss returns None."""
+    from gpkg.resolver import read_compat_cache
+
+    env = {"torch": "2.11", "cuda": "128", "python": "3.12", "platform": "linux_x86_64"}
+    assert read_compat_cache(["nonexistent"], env, cache_dir=tmp_path) is None
+
+
+def test_fetch_metadata_registry_override():
+    """Registry requires block is used when available."""
+    from gpkg.resolver import fetch_metadata
+    from gpkg.registry import Source, RequiresBlock
+    from gpkg.matching import WheelMatch
+
+    source = Source(
+        package="flash-attn", description="test", source_type="github",
+        requires=[RequiresBlock(
+            versions=["2.8.3"],
+            requires_dist=["torch>=2.0", "einops"],
+        )],
+    )
+    match = WheelMatch(
+        "flash-attn", "a.whl", "https://example.com/a.whl", "2.8.3",
+        "2.11", "128", "cp312-cp312", "linux_x86_64", "test", None, "",
+    )
+
+    result = fetch_metadata(match, sources=[source], client=None)
+    assert result == ["torch>=2.0", "einops"]
+
+
+def test_fetch_metadata_no_registry_returns_none_without_client():
+    """Without registry data and no client, returns None."""
+    from gpkg.resolver import fetch_metadata
+    from gpkg.registry import Source
+    from gpkg.matching import WheelMatch
+
+    source = Source(package="flash-attn", description="test", source_type="github")
+    match = WheelMatch(
+        "flash-attn", "a.whl", "https://example.com/a.whl", "2.8.3",
+        "2.11", "128", "cp312-cp312", "linux_x86_64", "test", None, "",
+    )
+
+    result = fetch_metadata(match, sources=[source], client=None)
+    assert result is None
+
+
+def test_parse_wheel_metadata():
+    """Parse Requires-Dist from METADATA content."""
+    from gpkg.resolver import parse_requires_dist
+
+    metadata = """Metadata-Version: 2.1
+Name: flash-attn
+Version: 2.8.3
+Requires-Dist: torch>=2.0
+Requires-Dist: einops
+Requires-Dist: packaging
+Requires-Dist: ninja ; extra == "build"
+"""
+    result = parse_requires_dist(metadata)
+    assert "torch>=2.0" in result
+    assert "einops" in result
+    assert "packaging" in result

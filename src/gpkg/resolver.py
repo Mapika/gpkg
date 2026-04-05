@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from gpkg.matching import WheelMatch
 
@@ -202,3 +210,165 @@ def score_combo(matches: list[WheelMatch], conflicts: list[Conflict]) -> float:
     penalty = len(conflicts) * 100_000
 
     return recency - penalty
+
+
+# ---------------------------------------------------------------------------
+# Compat cache
+# ---------------------------------------------------------------------------
+
+
+def _compat_cache_dir() -> Path:
+    """Return ~/.cache/gpkg/compat/, creating it if needed."""
+    d = Path.home() / ".cache" / "gpkg" / "compat"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def compat_cache_key(
+    packages: list[str],
+    torch: str,
+    cuda: str,
+    python: str,
+    platform: str,
+) -> str:
+    """Return a stable 16-char hex cache key for the given packages + env.
+
+    Package names are normalized (lowercase, _ -> -) and sorted so that
+    order doesn't matter.
+    """
+    normalized = sorted(
+        re.sub(r"[-_.]+", "-", p).lower() for p in packages
+    )
+    pkg_part = "+".join(normalized)
+    raw = f"{pkg_part}_cu{cuda}_torch{torch}_py{python}_{platform}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def write_compat_cache(
+    packages: list[str],
+    env: dict,
+    compat: CompatSet,
+    cache_dir: Optional[Path] = None,
+) -> Path:
+    """Write a CompatSet to TOML at cache_dir/<key>.toml."""
+    if cache_dir is None:
+        cache_dir = _compat_cache_dir()
+
+    key = compat_cache_key(
+        packages,
+        env["torch"],
+        env["cuda"],
+        env["python"],
+        env["platform"],
+    )
+    path = Path(cache_dir) / f"{key}.toml"
+
+    lines: list[str] = []
+
+    # [environment]
+    lines.append("[environment]")
+    lines.append(f'torch = "{env["torch"]}"')
+    lines.append(f'cuda = "{env["cuda"]}"')
+    lines.append(f'python = "{env["python"]}"')
+    lines.append(f'platform = "{env["platform"]}"')
+    lines.append("")
+
+    # [resolution]
+    lines.append("[resolution]")
+    lines.append(f'status = "{compat.status}"')
+    lines.append(f'resolved_at = "{compat.resolved_at}"')
+    lines.append("")
+
+    # [[packages]]
+    for pkg in compat.packages:
+        lines.append("[[packages]]")
+        for k, v in pkg.items():
+            lines.append(f'{k} = "{v}"')
+        lines.append("")
+
+    # [constraints]
+    if compat.constraints:
+        lines.append("[constraints]")
+        for k, v in compat.constraints.items():
+            lines.append(f'{k} = "{v}"')
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def read_compat_cache(
+    packages: list[str],
+    env: dict,
+    cache_dir: Optional[Path] = None,
+) -> Optional[CompatSet]:
+    """Read a CompatSet from the local cache; return None on miss."""
+    if cache_dir is None:
+        cache_dir = _compat_cache_dir()
+
+    key = compat_cache_key(
+        packages,
+        env["torch"],
+        env["cuda"],
+        env["python"],
+        env["platform"],
+    )
+    path = Path(cache_dir) / f"{key}.toml"
+
+    if not path.exists():
+        return None
+
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+
+    resolution = data.get("resolution", {})
+    return CompatSet(
+        packages=data.get("packages", []),
+        constraints=data.get("constraints", {}),
+        status=resolution.get("status", ""),
+        resolved_at=resolution.get("resolved_at", ""),
+    )
+
+
+def lookup_known_good(
+    packages: list[str],
+    env: dict,
+    client=None,
+) -> Optional[CompatSet]:
+    """Check local cache first; if miss and client provided, try hosted registry.
+
+    Falls back to https://wheels.mapika.dev/compat/<key>.toml on cache miss.
+    Caches locally on a hosted hit.
+    """
+    local = read_compat_cache(packages, env)
+    if local is not None:
+        return local
+
+    if client is None:
+        return None
+
+    key = compat_cache_key(
+        packages,
+        env["torch"],
+        env["cuda"],
+        env["python"],
+        env["platform"],
+    )
+    url = f"https://wheels.mapika.dev/compat/{key}.toml"
+
+    try:
+        response = client.get(url)
+        if response.status_code != 200:
+            return None
+
+        data = tomllib.loads(response.text)
+        resolution = data.get("resolution", {})
+        compat = CompatSet(
+            packages=data.get("packages", []),
+            constraints=data.get("constraints", {}),
+            status=resolution.get("status", ""),
+            resolved_at=resolution.get("resolved_at", ""),
+        )
+        write_compat_cache(packages, env, compat)
+        return compat
+    except Exception:
+        return None
