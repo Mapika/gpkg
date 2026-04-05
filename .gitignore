@@ -16,3 +16,4 @@ uv.lock
 Screenshot*
 *.html
 docs/superpowers/
+.playwright-mcp/
