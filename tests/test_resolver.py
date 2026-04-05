@@ -117,3 +117,58 @@ def test_score_newer_versions_higher():
     newer = score_combo([make("a", "3.0.0"), make("b", "2.0.0")], [])
     older = score_combo([make("a", "1.0.0"), make("b", "1.0.0")], [])
     assert newer > older
+
+
+def test_registry_requires_field():
+    """Source dataclass accepts requires blocks."""
+    from gpkg.registry import Source, RequiresBlock
+
+    rb = RequiresBlock(
+        versions=["2.8.3", "2.8.2"],
+        requires_dist=["torch>=2.0", "einops", "packaging", "ninja"],
+    )
+    s = Source(
+        package="flash-attn",
+        description="test",
+        source_type="github",
+        requires=[rb],
+    )
+    assert len(s.requires) == 1
+    assert "2.8.3" in s.requires[0].versions
+    assert "torch>=2.0" in s.requires[0].requires_dist
+
+
+def test_registry_requires_lookup():
+    """Can look up requires_dist for a specific version."""
+    from gpkg.registry import Source, RequiresBlock, get_requires_for_version
+
+    rb = RequiresBlock(
+        versions=["2.8.3", "2.8.2"],
+        requires_dist=["torch>=2.0", "einops"],
+    )
+    s = Source(package="flash-attn", description="t", source_type="github", requires=[rb])
+    assert get_requires_for_version(s, "2.8.3") == ["torch>=2.0", "einops"]
+    assert get_requires_for_version(s, "2.8.3.post1") == ["torch>=2.0", "einops"]
+    assert get_requires_for_version(s, "2.7.0") is None
+
+
+def test_search_all_versions_returns_multiple():
+    """search_all_versions returns all matches, not just best."""
+    from gpkg.matching import WheelMatch, search_all_versions
+
+    matches_by_pkg = search_all_versions(
+        all_matches={
+            "flash-attn": [
+                WheelMatch("flash-attn", "a.whl", "", "2.8.3", "2.11", "128",
+                           "cp312-cp312", "linux_x86_64", "test", None, ""),
+                WheelMatch("flash-attn", "b.whl", "", "2.8.2", "2.11", "128",
+                           "cp312-cp312", "linux_x86_64", "test", None, ""),
+                WheelMatch("flash-attn", "c.whl", "", "2.7.0", "2.11", "128",
+                           "cp312-cp312", "linux_x86_64", "test", None, ""),
+            ],
+        },
+        max_per_package=2,
+    )
+    assert len(matches_by_pkg["flash-attn"]) == 2
+    assert matches_by_pkg["flash-attn"][0].version == "2.8.3"
+    assert matches_by_pkg["flash-attn"][1].version == "2.8.2"

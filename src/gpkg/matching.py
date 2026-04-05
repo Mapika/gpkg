@@ -463,3 +463,34 @@ def pick_best(matches: list[WheelMatch]) -> Optional[WheelMatch]:
         return (m.version_tuple, -manylinux)
 
     return max(matches, key=key)
+
+
+def search_all_versions(
+    all_matches: dict[str, list[WheelMatch]],
+    max_per_package: int = 5,
+) -> dict[str, list[WheelMatch]]:
+    """Return top N matches per package, sorted newest-first.
+
+    Deduplicates by version (keeps the best match per version).
+    Used by the resolver to generate candidate combos.
+    """
+    result: dict[str, list[WheelMatch]] = {}
+    for pkg, matches in all_matches.items():
+        by_version: dict[str, WheelMatch] = {}
+        for m in matches:
+            if m.version not in by_version:
+                by_version[m.version] = m
+            else:
+                existing = by_version[m.version]
+                manylinux_new = 1 if "manylinux" in m.platform_tag else 0
+                manylinux_old = 1 if "manylinux" in existing.platform_tag else 0
+                if manylinux_new < manylinux_old:
+                    by_version[m.version] = m
+
+        sorted_matches = sorted(
+            by_version.values(),
+            key=lambda m: m.version_tuple,
+            reverse=True,
+        )
+        result[pkg] = sorted_matches[:max_per_package]
+    return result
