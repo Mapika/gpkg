@@ -420,3 +420,27 @@ def analyze_constraint(
         relaxable=relaxable,
         evidence=evidence,
     )
+
+
+def format_analysis(analysis: ConstraintAnalysis) -> str:
+    """Format a ConstraintAnalysis as plain text for display."""
+    lines = []
+
+    if analysis.relaxable:
+        lines.append(
+            f"  \u2713 {analysis.blocker}'s {analysis.dependency}{analysis.stated_range} "
+            f"is relaxable \u2192 safe range: {analysis.dependency}{analysis.safe_range}"
+        )
+    else:
+        lines.append(
+            f"  \u2717 {analysis.blocker}'s {analysis.dependency}{analysis.stated_range} "
+            f"is load-bearing"
+        )
+
+    for ev in analysis.evidence:
+        lines.append(f"    {ev}")
+
+    if analysis.relaxable and analysis.real_range and analysis.real_range != "*":
+        lines.append(f"    Actual transitive bound: {analysis.dependency}{analysis.real_range}")
+
+    return "\n".join(lines)

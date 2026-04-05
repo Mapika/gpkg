@@ -345,3 +345,44 @@ def test_analyze_no_transitive_constraints(tmp_path):
     )
 
     assert result.relaxable is True
+
+
+def test_format_analysis_relaxable():
+    """Relaxable analysis shows evidence and safe range."""
+    from gpkg.analyzer import format_analysis, ConstraintAnalysis
+
+    analysis = ConstraintAnalysis(
+        blocker="boltz",
+        dependency="numpy",
+        stated_range=">=1.26,<2.0",
+        real_range=">=1.24,<2.2",
+        safe_range=">=2.0,<2.2",
+        relaxable=True,
+        evidence=[
+            "numba requires numpy>=1.24,<2.2",
+            "scipy requires numpy>=1.22,<2.3",
+        ],
+    )
+    output = format_analysis(analysis)
+    assert "relaxable" in output.lower() or "Relaxable" in output
+    assert "numpy" in output
+    assert ">=2.0,<2.2" in output
+    assert "numba" in output
+
+
+def test_format_analysis_load_bearing():
+    """Load-bearing analysis shows which dep needs the pin."""
+    from gpkg.analyzer import format_analysis, ConstraintAnalysis
+
+    analysis = ConstraintAnalysis(
+        blocker="pkg-a",
+        dependency="numpy",
+        stated_range=">=1.26,<2.0",
+        real_range=">=1.20,<2.0",
+        safe_range=None,
+        relaxable=False,
+        evidence=["old-lib requires numpy>=1.20,<2.0"],
+    )
+    output = format_analysis(analysis)
+    assert "load-bearing" in output.lower() or "Load-bearing" in output
+    assert "old-lib" in output
