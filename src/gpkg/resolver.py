@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -75,6 +75,7 @@ class ResolveResult:
     alternatives: list[Combo]
     from_cache: bool
     cache_key: str
+    analyses: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +668,7 @@ def resolve(
     max_per_package: int = 5,
     max_trial: int = 3,
     cache_dir: Optional[Path] = None,
+    pypi_cache_dir: Optional[Path] = None,
 ) -> Optional[ResolveResult]:
     """Main resolver pipeline.
 
@@ -703,6 +705,7 @@ def resolve(
                 alternatives=[],
                 from_cache=True,
                 cache_key=key,
+                analyses=[],
             )
 
     # 2. Generate candidates
@@ -727,6 +730,36 @@ def resolve(
 
     # 4. Sort by score (highest first)
     combos.sort(key=lambda c: c.score, reverse=True)
+
+    # 4b. Analyze conflicts for relaxability
+    analyses = []
+    if combos and combos[0].conflicts:
+        try:
+            from gpkg.analyzer import analyze_constraint
+            for conflict in combos[0].conflicts:
+                for pkg_name, spec_str in conflict.specifiers.items():
+                    version = next(
+                        (m.version for m in combos[0].matches if m.package == pkg_name), ""
+                    )
+                    if not version:
+                        continue
+                    other_specs = ",".join(
+                        s for p, s in conflict.specifiers.items() if p != pkg_name
+                    )
+                    analysis = analyze_constraint(
+                        blocker_pkg=pkg_name,
+                        blocker_version=version,
+                        dep_name=conflict.dependency,
+                        stated_spec=spec_str,
+                        required_spec=other_specs,
+                        client=client,
+                        cache_dir=pypi_cache_dir,
+                    )
+                    if analysis.relaxable:
+                        analyses.append(analysis)
+                        break
+        except ImportError:
+            pass
 
     # 5. Trial resolution (top N zero-conflict combos)
     if not skip_trial:
@@ -765,6 +798,7 @@ def resolve(
         alternatives=combos[1:3],
         from_cache=False,
         cache_key=cache_key,
+        analyses=analyses,
     )
 
 

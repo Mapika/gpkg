@@ -386,3 +386,57 @@ def test_format_analysis_load_bearing():
     output = format_analysis(analysis)
     assert "load-bearing" in output.lower() or "Load-bearing" in output
     assert "old-lib" in output
+
+
+def test_resolver_calls_analyzer_on_conflict(tmp_path):
+    """Resolver runs analyzer when it detects a conflict."""
+    from gpkg.resolver import resolve
+    from gpkg.matching import WheelMatch
+    from gpkg.registry import Source, RequiresBlock
+    import json
+
+    pypi_cache = tmp_path / "pypi"
+    pypi_cache.mkdir()
+    (pypi_cache / "boltz-2.2.1.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.26,<2.0)",
+                "numba (==0.61.0)",
+            ]
+        }
+    }))
+    (pypi_cache / "numba-0.61.0.json").write_text(json.dumps({
+        "info": {"requires_dist": ["numpy (>=1.24,<2.2)"]}
+    }))
+
+    sources = [
+        Source(package="flash-attn", description="t", source_type="github",
+               requires=[RequiresBlock(["3.0.0"], ["numpy>=2.0"])]),
+        Source(package="boltz", description="t", source_type="github",
+               requires=[RequiresBlock(["2.2.1"], ["numpy>=1.26,<2.0"])]),
+    ]
+
+    def make(pkg, ver):
+        return WheelMatch(pkg, f"{pkg}-{ver}.whl", "", ver, "2.10", "128",
+                          "cp312-cp312", "linux_x86_64", "t", None, "")
+
+    all_versions = {
+        "flash-attn": [make("flash-attn", "3.0.0")],
+        "boltz": [make("boltz", "2.2.1")],
+    }
+    env = {"torch": "2.10", "cuda": "128", "python": "3.12", "platform": "linux_x86_64"}
+
+    result = resolve(
+        all_versions=all_versions,
+        env=env,
+        sources=sources,
+        client=None,
+        skip_trial=True,
+        cache_dir=tmp_path,
+        pypi_cache_dir=pypi_cache,
+    )
+
+    assert result is not None
+    assert len(result.analyses) > 0
+    assert result.analyses[0].relaxable is True
+    assert "2.0" in result.analyses[0].safe_range
