@@ -179,7 +179,7 @@ def interval_to_specifier(iv: VersionInterval) -> str:
         op = "<=" if iv.upper_inclusive else "<"
         parts.append(f"{op}{iv.upper}")
 
-    return ",".join(parts)
+    return ",".join(parts) if parts else "*"
 
 
 def _pypi_cache_dir() -> Path:

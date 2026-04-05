@@ -131,7 +131,7 @@ def _parse_dep(req: str) -> tuple[str, Optional[SpecifierSet]]:
 # Representative versions to probe (covers the realistic numpy/scipy/etc range)
 _PROBE_VERSIONS = [
     Version(f"{major}.{minor}.{patch}")
-    for major in range(0, 4)
+    for major in range(0, 10)
     for minor in range(0, 30)
     for patch in (0,)
 ]
@@ -746,6 +746,8 @@ def resolve(
                     other_specs = ",".join(
                         s for p, s in conflict.specifiers.items() if p != pkg_name
                     )
+                    if not other_specs:
+                        continue
                     analysis = analyze_constraint(
                         blocker_pkg=pkg_name,
                         blocker_version=version,
@@ -758,7 +760,7 @@ def resolve(
                     if analysis.relaxable:
                         analyses.append(analysis)
                         break
-        except ImportError:
+        except Exception:
             pass
 
     # 5. Trial resolution (top N zero-conflict combos)
