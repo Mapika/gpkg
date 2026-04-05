@@ -1,0 +1,25 @@
+# Example: Use gpkg in GitHub Actions to resolve CUDA wheels
+# Copy this file to .github/workflows/ in your project and adjust packages/versions.
+
+name: CUDA Build
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Resolve CUDA wheels
+        run: |
+          uv tool install gpkg
+          gpkg add flash-attn causal-conv1d mamba-ssm --torch 2.10 --cuda 128
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: uv run pytest -v

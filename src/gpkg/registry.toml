@@ -1,0 +1,288 @@
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  gpkg registry — community-maintained CUDA wheel sources     ║
+# ║                                                                 ║
+# ║  Adding a new source: copy a [[sources]] block, change fields,  ║
+# ║  open a PR.  The tool searches ALL sources and picks the best.  ║
+# ╚══════════════════════════════════════════════════════════════════╝
+#
+# Wheel name template placeholders (auto-expanded to regex):
+#   {version}   — package version        2.8.3, 1.6.1.post4
+#   {cuda}      — CUDA tag               130, 12, 126 (see cuda_style)
+#   {torch}     — PyTorch version         2.11, 2.7 (see torch_format)
+#   {pytag}     — Python ABI tag          cp312-cp312, cp39-abi3
+#   {platform}  — OS+arch tag             linux_x86_64, win_amd64
+#   {abi}       — C++11 ABI flag          TRUE or FALSE
+#   {hash}      — optional git hash       gite2743ab (can be absent)
+#
+# cuda_style:
+#   "full"  — cu130 = CUDA 13.0,  cu126 = CUDA 12.6  (3 digits)
+#   "short" — cu13  = CUDA 13.x,  cu12  = CUDA 12.x  (major only)
+#
+# torch_format (optional, default "minor"):
+#   "minor"  — 2.11, 2.10, 2.7   (major.minor, default)
+#   "packed" — 2110, 2100, 280    (no dots, includes patch as 0)
+#   "full"   — 2.11.0, 2.10.0    (major.minor.patch)
+
+
+# ════════════════════════════════════════════════════════════════════
+#  FLASH ATTENTION 2
+# ════════════════════════════════════════════════════════════════════
+
+[[sources]]
+package      = "flash-attn"
+description  = "Flash Attention 2 — mjun0812 prebuilt (Linux + Windows)"
+type         = "github"
+repo         = "mjun0812/flash-attention-prebuild-wheels"
+wheel_name   = "flash_attn-{version}+cu{cuda}torch{torch}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+scan_tags    = 8
+
+[[sources]]
+package      = "flash-attn"
+description  = "Flash Attention 2 — Dao-AILab official"
+type         = "github"
+repo         = "Dao-AILab/flash-attention"
+wheel_name   = "flash_attn-{version}+cu{cuda}torch{torch}cxx11abi{abi}-{pytag}-{platform}.whl"
+cuda_style   = "short"
+has_abi      = true
+scan_tags    = 3
+
+
+# ════════════════════════════════════════════════════════════════════
+#  FLASH ATTENTION 3 (Hopper SM90+ only)
+# ════════════════════════════════════════════════════════════════════
+
+[[sources]]
+package      = "flash-attn-3"
+description  = "Flash Attention 3 — mjun0812 prebuilt (Linux + Windows)"
+type         = "github"
+repo         = "mjun0812/flash-attention-prebuild-wheels"
+wheel_name   = "flash_attn_3-{version}+cu{cuda}torch{torch}{hash}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+scan_tags    = 8
+
+# windreamer provides a pip --find-links index (not GitHub release assets)
+# Uses nonstandard naming with date+hash in local version — {_} wildcard matches those
+[[sources]]
+package      = "flash-attn-3"
+description  = "Flash Attention 3 — windreamer find-links index"
+type         = "find-links"
+url_template = "https://windreamer.github.io/flash-attention3-wheels/cu{cuda}_torch{torch}"
+wheel_name   = "flash_attn_3-{version}+{_}.cu{cuda}torch{torch}cxx11abi{_}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "packed"
+
+
+# ════════════════════════════════════════════════════════════════════
+#  CAUSAL CONV1D (Mamba dependency)
+# ════════════════════════════════════════════════════════════════════
+
+[[sources]]
+package      = "causal-conv1d"
+description  = "Causal depthwise conv1d — Dao-AILab official"
+type         = "github"
+repo         = "Dao-AILab/causal-conv1d"
+wheel_name   = "causal_conv1d-{version}+cu{cuda}torch{torch}cxx11abi{abi}-{pytag}-{platform}.whl"
+cuda_style   = "short"
+has_abi      = true
+scan_tags    = 5
+
+
+# ════════════════════════════════════════════════════════════════════
+#  MAMBA SSM
+# ════════════════════════════════════════════════════════════════════
+
+[[sources]]
+package      = "mamba-ssm"
+description  = "Mamba SSM — state-spaces official"
+type         = "github"
+repo         = "state-spaces/mamba"
+wheel_name   = "mamba_ssm-{version}+cu{cuda}torch{torch}cxx11abi{abi}-{pytag}-{platform}.whl"
+cuda_style   = "short"
+has_abi      = true
+scan_tags    = 5
+
+
+# ════════════════════════════════════════════════════════════════════
+#  NATTEN (Neighborhood Attention)
+# ════════════════════════════════════════════════════════════════════
+
+# NATTEN uses packed torch versions: torch2100 = 2.10.0, torch280 = 2.8.0
+# Also has a find-links index at https://shi-labs.com/natten/wheels/
+[[sources]]
+package      = "natten"
+description  = "NATTEN — SHI-Labs official (Linux x86_64 + aarch64)"
+type         = "github"
+repo         = "SHI-Labs/NATTEN"
+wheel_name   = "natten-{version}+torch{torch}cu{cuda}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "packed"
+scan_tags    = 5
+
+
+# ════════════════════════════════════════════════════════════════════
+#  GROUPED GEMM (MoE, MegaBlocks dependency)
+# ════════════════════════════════════════════════════════════════════
+
+[[sources]]
+package      = "grouped-gemm"
+description  = "NVIDIA grouped GEMM — fanshiqing official"
+type         = "github"
+repo         = "fanshiqing/grouped_gemm"
+wheel_name   = "nv_grouped_gemm-{version}+cu{cuda}torch{torch}cxx11abi{abi}-{pytag}-{platform}.whl"
+cuda_style   = "short"
+has_abi      = true
+scan_tags    = 5
+
+
+# ════════════════════════════════════════════════════════════════════
+#  SAGEATTENTION
+# ════════════════════════════════════════════════════════════════════
+
+# woct0rdho's fork: primary source for Windows wheels, uses abi3
+# Note: torch version in filenames is full (2.9.0) not minor (2.9)
+# Some wheels have special suffixes like "andhigher"
+[[sources]]
+package      = "sageattention"
+description  = "SageAttention 2 — woct0rdho Windows+Linux wheels"
+type         = "github"
+repo         = "woct0rdho/SageAttention"
+wheel_name   = "sageattention-{version}+cu{cuda}torch{torch}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "full"
+scan_tags    = 5
+
+# mobcat40: Blackwell-specific builds (sm_120, torch 2.11 nightly)
+[[sources]]
+package      = "sageattention"
+description  = "SageAttention 2 — mobcat40 Blackwell (RTX 50xx, sm120)"
+type         = "github"
+repo         = "mobcat40/sageattention-blackwell"
+wheel_name   = "sageattention-{version}+cu{cuda}.torch{torch}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "minor"
+scan_tags    = 3
+
+
+# ════════════════════════════════════════════════════════════════════
+#  TRITON (Windows)
+# ════════════════════════════════════════════════════════════════════
+
+# Triton on Linux comes from PyPI. On Windows, woct0rdho provides builds.
+# These are NOT CUDA/torch-versioned — they're pure Python ABI.
+# Included here for completeness; the tool can't match on cuda/torch.
+# Install: pip install https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post10/triton-3.2.0-cp312-cp312-win_amd64.whl
+
+# [[sources]]
+# package      = "triton"
+# description  = "Triton — woct0rdho Windows builds"
+# type         = "github"
+# repo         = "woct0rdho/triton-windows"
+# NOTE: triton wheels don't follow cuda/torch versioning — skip for now
+
+
+# ════════════════════════════════════════════════════════════════════
+#  NOTES ON PACKAGES THAT DON'T NEED THIS TOOL
+# ════════════════════════════════════════════════════════════════════
+#
+# xformers:
+#   Published on PyPI. Since v0.0.34 uses PyTorch stable ABI (one wheel
+#   for 2.10+). Just: pip install xformers
+#   For older versions: pip install xformers --index-url https://download.pytorch.org/whl/cu126
+#
+# bitsandbytes:
+#   Published on PyPI as platform-specific but CUDA-agnostic wheels
+#   (bundles all CUDA versions in one .so). Just: pip install bitsandbytes
+#
+# deepspeed:
+#   Published on PyPI. Compiles JIT at runtime, no CUDA-versioned wheels.
+#   pip install deepspeed
+#
+# flash-linear-attention (fla):
+#   Pure Python + Triton. No CUDA compilation needed.
+#   pip install flash-linear-attention
+#
+# megablocks:
+#   Published on PyPI as source dist. Requires grouped-gemm for best perf.
+#   pip install megablocks[gg]
+#
+# transformer-engine:
+#   NVIDIA ships wheels via their index.
+#   pip install transformer-engine --index-url https://developer.download.nvidia.com/compute/transformer-engine/whl/
+#
+# ════════════════════════════════════════════════════════════════════
+#  PYTORCH GEOMETRIC (graph neural networks)
+# ════════════════════════════════════════════════════════════════════
+
+# PyG hosts wheels at data.pyg.org — requires full torch version in URL (e.g. 2.10.0 not 2.10)
+# Packed torch format in filenames: pt210 = PyTorch 2.10
+
+[[sources]]
+package      = "torch-scatter"
+description  = "torch-scatter — PyG team official"
+type         = "find-links"
+url_template = "https://data.pyg.org/whl/torch-{torch}+cu{cuda}.html"
+wheel_name   = "torch_scatter-{version}+pt{torch}cu{cuda}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "pyg"
+
+[[sources]]
+package      = "torch-sparse"
+description  = "torch-sparse — PyG team official"
+type         = "find-links"
+url_template = "https://data.pyg.org/whl/torch-{torch}+cu{cuda}.html"
+wheel_name   = "torch_sparse-{version}+pt{torch}cu{cuda}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "pyg"
+
+[[sources]]
+package      = "torch-cluster"
+description  = "torch-cluster — PyG team official"
+type         = "find-links"
+url_template = "https://data.pyg.org/whl/torch-{torch}+cu{cuda}.html"
+wheel_name   = "torch_cluster-{version}+pt{torch}cu{cuda}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "pyg"
+
+[[sources]]
+package      = "torch-spline-conv"
+description  = "torch-spline-conv — PyG team official"
+type         = "find-links"
+url_template = "https://data.pyg.org/whl/torch-{torch}+cu{cuda}.html"
+wheel_name   = "torch_spline_conv-{version}+pt{torch}cu{cuda}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "pyg"
+
+[[sources]]
+package      = "pyg-lib"
+description  = "pyg-lib — PyG team official"
+type         = "find-links"
+url_template = "https://data.pyg.org/whl/torch-{torch}+cu{cuda}.html"
+wheel_name   = "pyg_lib-{version}+pt{torch}cu{cuda}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "pyg"
+
+
+# ════════════════════════════════════════════════════════════════════
+#  HOW TO ADD YOUR OWN SOURCE
+# ════════════════════════════════════════════════════════════════════
+#
+# 1. Copy any [[sources]] block above
+# 2. Change `package` to the pip package name
+# 3. Change `repo` to your GitHub owner/repo
+# 4. Change `wheel_name` to match your filenames, using {placeholders}
+# 5. Set `cuda_style` to "full" or "short" depending on your naming
+# 6. Set `has_abi = true` if your filenames contain cxx11abi{TRUE/FALSE}
+# 7. Set `torch_format` if you use non-standard torch versioning
+# 8. Open a PR!
+#
+# Example:
+#
+# [[sources]]
+# package      = "causal-conv1d"
+# description  = "causal-conv1d — yourname's torch 2.11 builds"
+# type         = "github"
+# repo         = "yourname/causal-conv1d-torch211"
+# wheel_name   = "causal_conv1d-{version}+cu{cuda}torch{torch}-{pytag}-{platform}.whl"
+# cuda_style   = "full"
+# scan_tags    = 3
