@@ -432,3 +432,163 @@ def generate_candidates(
     )
 
     return combos
+
+
+# ---------------------------------------------------------------------------
+# Metadata fetching
+# ---------------------------------------------------------------------------
+
+_METADATA_TTL = 600  # 10 minutes in seconds
+
+
+def parse_requires_dist(metadata_text: str) -> list[str]:
+    """Extract all Requires-Dist entries from wheel METADATA content."""
+    result = []
+    for line in metadata_text.splitlines():
+        if line.startswith("Requires-Dist:"):
+            value = line[len("Requires-Dist:"):].strip()
+            if value:
+                result.append(value)
+    return result
+
+
+def _metadata_cache_dir() -> Path:
+    """Return ~/.cache/gpkg/metadata/, creating it if needed."""
+    d = Path.home() / ".cache" / "gpkg" / "metadata"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _fetch_wheel_metadata_http(url: str, client) -> Optional[str]:
+    """Fetch METADATA from a remote wheel via HTTP range requests.
+
+    Tries to read just the ZIP end-of-central-directory to locate
+    the METADATA entry, then fetches only that entry. Falls back to
+    downloading the full wheel if range requests are not supported.
+    Returns the METADATA text content, or None on failure.
+    """
+    import struct
+    import zipfile
+    import io
+
+    try:
+        # Step 1: fetch last 65536 bytes to find ZIP EOCD
+        resp = client.get(url, headers={"Range": "bytes=-65536"})
+
+        if resp.status_code == 206:
+            tail = resp.content
+            # Search for EOCD signature (PK\x05\x06)
+            eocd_sig = b"PK\x05\x06"
+            eocd_pos = tail.rfind(eocd_sig)
+
+            if eocd_pos != -1 and len(tail) - eocd_pos >= 22:
+                eocd = tail[eocd_pos:]
+                cd_size = struct.unpack_from("<I", eocd, 12)[0]
+                cd_offset = struct.unpack_from("<I", eocd, 16)[0]
+
+                # Step 2: fetch central directory
+                cd_resp = client.get(
+                    url,
+                    headers={"Range": f"bytes={cd_offset}-{cd_offset + cd_size - 1}"},
+                )
+                if cd_resp.status_code == 206:
+                    cd_data = cd_resp.content
+                    # Scan central directory for *.dist-info/METADATA
+                    sig = b"PK\x01\x02"
+                    pos = 0
+                    while pos < len(cd_data):
+                        entry_pos = cd_data.find(sig, pos)
+                        if entry_pos == -1:
+                            break
+                        if entry_pos + 46 > len(cd_data):
+                            break
+                        fname_len = struct.unpack_from("<H", cd_data, entry_pos + 28)[0]
+                        extra_len = struct.unpack_from("<H", cd_data, entry_pos + 30)[0]
+                        comment_len = struct.unpack_from("<H", cd_data, entry_pos + 32)[0]
+                        local_offset = struct.unpack_from("<I", cd_data, entry_pos + 42)[0]
+                        fname_bytes = cd_data[entry_pos + 46: entry_pos + 46 + fname_len]
+                        try:
+                            fname_str = fname_bytes.decode("utf-8")
+                        except UnicodeDecodeError:
+                            pos = entry_pos + 46 + fname_len + extra_len + comment_len
+                            continue
+                        if fname_str.endswith(".dist-info/METADATA"):
+                            # Step 3: fetch local file header (30 bytes) to get offsets
+                            hdr_resp = client.get(
+                                url,
+                                headers={"Range": f"bytes={local_offset}-{local_offset + 29}"},
+                            )
+                            if hdr_resp.status_code == 206 and len(hdr_resp.content) >= 30:
+                                local_fname_len = struct.unpack_from("<H", hdr_resp.content, 26)[0]
+                                local_extra_len = struct.unpack_from("<H", hdr_resp.content, 28)[0]
+                                data_start = local_offset + 30 + local_fname_len + local_extra_len
+                                comp_size = struct.unpack_from("<I", cd_data, entry_pos + 20)[0]
+                                data_resp = client.get(
+                                    url,
+                                    headers={"Range": f"bytes={data_start}-{data_start + comp_size - 1}"},
+                                )
+                                if data_resp.status_code == 206:
+                                    compress_method = struct.unpack_from("<H", hdr_resp.content, 8)[0]
+                                    if compress_method == 0:
+                                        return data_resp.content.decode("utf-8", errors="replace")
+                                    elif compress_method == 8:
+                                        import zlib
+                                        decompressed = zlib.decompress(data_resp.content, -15)
+                                        return decompressed.decode("utf-8", errors="replace")
+                        pos = entry_pos + 46 + fname_len + extra_len + comment_len
+
+        # Fallback: download full wheel and extract with zipfile
+        full_resp = client.get(url)
+        if full_resp.status_code == 200:
+            with zipfile.ZipFile(io.BytesIO(full_resp.content)) as zf:
+                for name in zf.namelist():
+                    if name.endswith(".dist-info/METADATA"):
+                        return zf.read(name).decode("utf-8", errors="replace")
+
+    except Exception:
+        pass
+
+    return None
+
+
+def fetch_metadata(
+    match: WheelMatch,
+    sources: list[Source],
+    client=None,
+) -> Optional[list[str]]:
+    """Fetch requires_dist for a wheel match.
+
+    Priority:
+    1. Registry requires override (curated data in registry.toml)
+    2. Local metadata cache (~/.cache/gpkg/metadata/{package}-{version}.txt, 10 min TTL)
+    3. On-demand HTTP fetch via _fetch_wheel_metadata_http
+    """
+    import time
+
+    # 1. Registry override
+    for source in sources:
+        if source.package == match.package:
+            reqs = get_requires_for_version(source, match.version)
+            if reqs is not None:
+                return reqs
+
+    # 2. Local cache
+    cache_dir = _metadata_cache_dir()
+    cache_file = cache_dir / f"{match.package}-{match.version}.txt"
+    if cache_file.exists():
+        age = time.time() - cache_file.stat().st_mtime
+        if age < _METADATA_TTL:
+            content = cache_file.read_text(encoding="utf-8")
+            return parse_requires_dist(content)
+
+    # 3. HTTP fetch
+    if client is None:
+        return None
+
+    metadata_text = _fetch_wheel_metadata_http(match.url, client)
+    if metadata_text is None:
+        return None
+
+    # Cache the result
+    cache_file.write_text(metadata_text, encoding="utf-8")
+    return parse_requires_dist(metadata_text)
