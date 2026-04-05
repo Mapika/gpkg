@@ -37,6 +37,10 @@ wheel_name   = "flash_attn-{version}+cu{cuda}torch{torch}-{pytag}-{platform}.whl
 cuda_style   = "full"
 scan_tags    = 8
 
+[[sources.requires]]
+versions      = ["2.8.3", "2.8.2", "2.8.1", "2.8.0"]
+requires_dist = ["torch>=2.0", "einops", "packaging", "ninja"]
+
 [[sources]]
 package      = "flash-attn"
 description  = "Flash Attention 2 — Dao-AILab official"
@@ -87,6 +91,10 @@ cuda_style   = "short"
 has_abi      = true
 scan_tags    = 5
 
+[[sources.requires]]
+versions      = ["1.5.0", "1.4.0"]
+requires_dist = ["torch>=2.0", "packaging"]
+
 
 # ════════════════════════════════════════════════════════════════════
 #  MAMBA SSM
@@ -101,6 +109,10 @@ wheel_name   = "mamba_ssm-{version}+cu{cuda}torch{torch}cxx11abi{abi}-{pytag}-{p
 cuda_style   = "short"
 has_abi      = true
 scan_tags    = 5
+
+[[sources.requires]]
+versions      = ["2.2.4", "2.2.3"]
+requires_dist = ["torch>=2.0", "packaging", "causal-conv1d>=1.4.0"]
 
 
 # ════════════════════════════════════════════════════════════════════

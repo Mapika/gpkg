@@ -26,6 +26,13 @@ LOCAL_REGISTRY = str(Path(__file__).parent / "registry.toml")
 
 
 @dataclass
+class RequiresBlock:
+    """Curated dependency metadata for specific package versions."""
+    versions: list[str] = field(default_factory=list)
+    requires_dist: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Source:
     """One place that publishes wheels for a package."""
 
@@ -40,6 +47,7 @@ class Source:
     torch_format: str = "minor"  # "minor" | "packed" | "full"
     torch_compat: str = ""  # e.g. ">=2.4,<2.6" — empty means any
     scan_tags: int = 8
+    requires: list[RequiresBlock] = field(default_factory=list)
 
     _regex: Optional[re.Pattern] = field(default=None, repr=False, compare=False)
 
@@ -80,6 +88,15 @@ def _template_to_regex(template: str) -> re.Pattern:
     return re.compile("".join(out))
 
 
+def get_requires_for_version(source: Source, version: str) -> Optional[list[str]]:
+    """Look up curated requires_dist for a specific version."""
+    base = version.split(".post")[0].split(".dev")[0]
+    for block in source.requires:
+        if base in block.versions or version in block.versions:
+            return block.requires_dist
+    return None
+
+
 def load_registry(path_or_url: str, client: httpx.Client) -> list[Source]:
     if path_or_url.startswith(("http://", "https://")):
         resp = client.get(path_or_url, timeout=5)
@@ -88,8 +105,15 @@ def load_registry(path_or_url: str, client: httpx.Client) -> list[Source]:
     else:
         with open(path_or_url, "rb") as f:
             data = tomllib.load(f)
-    return [
-        Source(
+    sources = []
+    for e in data.get("sources", []):
+        requires_blocks = []
+        for rb in e.get("requires", []):
+            requires_blocks.append(RequiresBlock(
+                versions=rb.get("versions", []),
+                requires_dist=rb.get("requires_dist", []),
+            ))
+        sources.append(Source(
             package=e["package"],
             description=e.get("description", ""),
             source_type=e.get("type", "github"),
@@ -101,9 +125,9 @@ def load_registry(path_or_url: str, client: httpx.Client) -> list[Source]:
             torch_format=e.get("torch_format", "minor"),
             torch_compat=e.get("torch_compat", ""),
             scan_tags=e.get("scan_tags", 8),
-        )
-        for e in data.get("sources", [])
-    ]
+            requires=requires_blocks,
+        ))
+    return sources
 
 
 def load_registry_with_fallback(client: httpx.Client) -> list[Source]:
