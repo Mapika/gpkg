@@ -416,8 +416,10 @@ def generate_candidates(
         if len(torch_versions) > 1:
             continue
 
-        cuda_tags = {m.cuda_tag for m in matches if m.cuda_tag}
-        if len(cuda_tags) > 1:
+        # Normalize CUDA tags: "128" and "12" both mean CUDA 12.x
+        cuda_majors = {m.cuda_tag[:2] if len(m.cuda_tag) >= 2 else m.cuda_tag
+                       for m in matches if m.cuda_tag}
+        if len(cuda_majors) > 1:
             continue
 
         abi_values = {m.cxx11_abi for m in matches if m.cxx11_abi is not None}

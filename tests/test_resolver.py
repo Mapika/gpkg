@@ -255,9 +255,9 @@ def test_fetch_metadata_no_registry_returns_none_without_client():
     from gpkg.registry import Source
     from gpkg.matching import WheelMatch
 
-    source = Source(package="flash-attn", description="test", source_type="github")
+    source = Source(package="nonexistent-pkg", description="test", source_type="github")
     match = WheelMatch(
-        "flash-attn", "a.whl", "https://example.com/a.whl", "2.8.3",
+        "nonexistent-pkg", "a.whl", "https://example.com/a.whl", "9.9.9",
         "2.11", "128", "cp312-cp312", "linux_x86_64", "test", None, "",
     )
 
