@@ -763,3 +763,145 @@ def resolve(
         from_cache=False,
         cache_key=cache_key,
     )
+
+
+# ---------------------------------------------------------------------------
+# Output formatting
+# ---------------------------------------------------------------------------
+
+
+def format_resolve_result(result: ResolveResult) -> str:
+    """Format a ResolveResult as plain text for display."""
+    lines: list[str] = []
+
+    if result.from_cache and not result.chosen.conflicts:
+        lines.append("  \u2713 Known compatible set found")
+        lines.append("")
+        for m in result.chosen.matches:
+            source_short = m.source_desc.split(" \u2014 ")[-1] if " \u2014 " in m.source_desc else m.source_desc
+            lines.append(f"  {m.package:<20s} {m.version:<10s} {source_short}")
+        return "\n".join(lines)
+
+    if not result.chosen.conflicts:
+        lines.append("  \u2713 Compatible set found")
+        lines.append("")
+        for m in result.chosen.matches:
+            source_short = m.source_desc.split(" \u2014 ")[-1] if " \u2014 " in m.source_desc else m.source_desc
+            lines.append(f"  {m.package:<20s} {m.version:<10s} {source_short}")
+        return "\n".join(lines)
+
+    # Conflict path
+    lines.append("  \u2717 Conflicts detected")
+    lines.append("")
+    for c in result.chosen.conflicts:
+        lines.append(f"  Conflict: {c.dependency}")
+        for pkg, spec in c.specifiers.items():
+            lines.append(f"    {pkg} requires {c.dependency}{spec}")
+    lines.append("")
+
+    if result.alternatives:
+        lines.append(f"  Found {len(result.alternatives)} alternative set(s):")
+        for i, alt in enumerate(result.alternatives, 1):
+            lines.append("")
+            conflict_note = f" ({len(alt.conflicts)} conflict(s))" if alt.conflicts else ""
+            lines.append(f"  [{i}]{conflict_note}")
+            for m in alt.matches:
+                lines.append(f"      {m.package} {m.version}")
+    else:
+        lines.append("  Suggestions:")
+        lines.append("    \u2022 Remove one of the conflicting packages")
+        lines.append("    \u2022 Pin a specific version: gpkg add pkg==VERSION")
+        lines.append("    \u2022 Use --build-missing to build from source")
+
+    return "\n".join(lines)
+
+
+def present_options(result: ResolveResult) -> Optional[Combo]:
+    """Present options to the user and get their choice.
+
+    Returns the chosen Combo, or None if the user aborts.
+    """
+    from gpkg import console
+
+    if not result.alternatives:
+        return result.chosen
+
+    console.print(format_resolve_result(result))
+    console.print("")
+
+    all_options = [result.chosen] + result.alternatives
+    clean_options = [c for c in all_options if not c.conflicts]
+
+    if not clean_options:
+        console.print("  [red]No conflict-free sets available.[/red]")
+        return None
+
+    if len(clean_options) == 1:
+        return clean_options[0]
+
+    console.print(f"  Found {len(clean_options)} compatible sets:\n")
+    for i, combo in enumerate(clean_options, 1):
+        label = " [dim](recommended)[/dim]" if i == 1 else ""
+        console.print(f"  [{i}]{label}")
+        for m in combo.matches:
+            console.print(f"      {m.package} {m.version}")
+        console.print("")
+
+    try:
+        choice = input(f"  Choose [1-{len(clean_options)}] or 'q' to abort: ").strip()
+        if choice.lower() == "q":
+            return None
+        idx = int(choice) - 1
+        if 0 <= idx < len(clean_options):
+            return clean_options[idx]
+    except (ValueError, EOFError, KeyboardInterrupt):
+        return None
+
+    return clean_options[0]
+
+
+# ---------------------------------------------------------------------------
+# Build reports
+# ---------------------------------------------------------------------------
+
+
+def format_build_report(
+    package: str,
+    version: str,
+    torch: str,
+    cuda: str,
+    python: str,
+    platform: str,
+    gpu_arch: str,
+    build_time: int,
+    gpkg_version: str,
+) -> dict:
+    """Format a build report for submission to the hosted registry."""
+    return {
+        "package": package,
+        "version": version,
+        "torch": torch,
+        "cuda": cuda,
+        "python": python,
+        "platform": platform,
+        "gpu_arch": gpu_arch,
+        "build_time_seconds": build_time,
+        "success": True,
+        "gpkg_version": gpkg_version,
+    }
+
+
+def send_build_report(report: dict, client) -> bool:
+    """Send a build report to the hosted registry.
+
+    Returns True if the report was accepted.
+    """
+    try:
+        resp = client.post(
+            "https://wheels.mapika.dev/api/report",
+            json=report,
+            timeout=10,
+        )
+        return resp.status_code in (200, 201, 202)
+    except Exception:
+        return False

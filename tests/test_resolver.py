@@ -418,3 +418,72 @@ def test_resolve_detects_conflict(tmp_path):
     assert result is not None
     assert len(result.chosen.conflicts) > 0
     assert result.chosen.conflicts[0].dependency == "numpy"
+
+
+def test_format_resolve_result_happy_path():
+    """Happy path produces clean output."""
+    from gpkg.resolver import format_resolve_result, ResolveResult, Combo
+    from gpkg.matching import WheelMatch
+
+    match = WheelMatch(
+        "flash-attn", "flash_attn-2.8.3.whl",
+        "https://wheels.mapika.dev/flash-attn/flash_attn-2.8.3.whl",
+        "2.8.3", "2.11", "128", "cp312-cp312", "linux_x86_64",
+        "flash-attn \u2014 gpkg hosted registry", None, "",
+    )
+    result = ResolveResult(
+        chosen=Combo(matches=[match], conflicts=[], score=100.0),
+        alternatives=[],
+        from_cache=True,
+        cache_key="abc123",
+    )
+
+    output = format_resolve_result(result)
+    assert "flash-attn" in output
+    assert "2.8.3" in output
+
+
+def test_format_resolve_result_conflict():
+    """Conflict path shows diagnosis."""
+    from gpkg.resolver import format_resolve_result, ResolveResult, Combo, Conflict
+    from gpkg.matching import WheelMatch
+
+    def make(pkg, ver):
+        return WheelMatch(pkg, f"{pkg}.whl", "", ver, "2.11", "128",
+                          "cp312-cp312", "linux_x86_64", "test", None, "")
+
+    conflict = Conflict("numpy", {"pkg-a": ">=2.0", "pkg-b": "<2.0"}, "empty")
+    result = ResolveResult(
+        chosen=Combo(matches=[make("pkg-a", "1.0"), make("pkg-b", "1.0")],
+                     conflicts=[conflict], score=-1000.0),
+        alternatives=[],
+        from_cache=False,
+        cache_key="abc123",
+    )
+
+    output = format_resolve_result(result)
+    assert "numpy" in output
+    assert "conflict" in output.lower() or "Conflict" in output
+
+
+def test_build_report_format():
+    """Build report contains required fields."""
+    from gpkg.resolver import format_build_report
+
+    report = format_build_report(
+        package="mamba-ssm",
+        version="2.2.4",
+        torch="2.11.0",
+        cuda="128",
+        python="3.12",
+        platform="linux_x86_64",
+        gpu_arch="9.0",
+        build_time=847,
+        gpkg_version="0.5.0",
+    )
+    assert report["package"] == "mamba-ssm"
+    assert report["version"] == "2.2.4"
+    assert report["torch"] == "2.11.0"
+    assert report["success"] is True
+    assert report["build_time_seconds"] == 847
+    assert report["gpkg_version"] == "0.5.0"
