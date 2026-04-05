@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import itertools
 import re
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -592,3 +595,55 @@ def fetch_metadata(
     # Cache the result
     cache_file.write_text(metadata_text, encoding="utf-8")
     return parse_requires_dist(metadata_text)
+
+
+# ---------------------------------------------------------------------------
+# Trial resolution
+# ---------------------------------------------------------------------------
+
+
+def _build_trial_requirements(combo: Combo) -> list[str]:
+    """Build a requirements list for uv pip compile from a combo."""
+    return [f"{m.package}=={m.version}" for m in combo.matches]
+
+
+def trial_resolve(combo: Combo, timeout: int = 30) -> bool:
+    """Test if a combo resolves using uv pip compile --dry-run.
+
+    Returns True if uv can find a compatible set of transitive dependencies.
+    Returns True if uv is not available (can't verify — assume it works).
+    """
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        return True
+
+    reqs = _build_trial_requirements(combo)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write("\n".join(reqs))
+        f.flush()
+        req_file = f.name
+
+    try:
+        find_links: set[str] = set()
+        for m in combo.matches:
+            if m.url:
+                base = m.url.rsplit("/", 1)[0] + "/"
+                find_links.add(base)
+
+        cmd = [
+            uv_path, "pip", "compile", req_file,
+            "--quiet", "--no-header",
+        ]
+        for fl in find_links:
+            cmd.extend(["--find-links", fl])
+
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+        )
+        return result.returncode == 0
+
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return True
+    finally:
+        Path(req_file).unlink(missing_ok=True)

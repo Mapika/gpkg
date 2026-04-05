@@ -330,3 +330,25 @@ def test_generate_candidates_gpu_pruning():
     }
     combos = generate_candidates(all_versions)
     assert len(combos) == 0  # torch 2.11 vs 2.10 mismatch
+
+
+def test_trial_resolve_builds_requirements():
+    """trial_resolve builds correct requirements list for uv."""
+    from gpkg.resolver import _build_trial_requirements, Combo
+    from gpkg.matching import WheelMatch
+
+    combo = Combo(
+        matches=[
+            WheelMatch("flash-attn", "a.whl", "https://example.com/a.whl",
+                       "2.8.3", "2.11", "128", "cp312-cp312",
+                       "linux_x86_64", "test", None, ""),
+            WheelMatch("mamba-ssm", "b.whl", "https://example.com/b.whl",
+                       "2.2.4", "2.11", "128", "cp312-cp312",
+                       "linux_x86_64", "test", None, ""),
+        ],
+        conflicts=[],
+        score=0.0,
+    )
+    reqs = _build_trial_requirements(combo)
+    assert "flash-attn==2.8.3" in reqs
+    assert "mamba-ssm==2.2.4" in reqs
