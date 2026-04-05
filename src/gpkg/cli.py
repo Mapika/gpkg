@@ -623,6 +623,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cache-info", action="store_true", help="show cache statistics")
     p.add_argument("--cache-clean", action="store_true", help="delete cached data")
     p.add_argument("--older-than", default=None, help="with --cache-clean: duration (5m, 1h, 2d)")
+    p.add_argument("--no-resolve", action="store_true",
+                   help="skip compatibility resolution, pick latest per package")
+    p.add_argument("--resolve-explain", action="store_true",
+                   help="show full constraint graph and scoring details")
+    p.add_argument("--report", action="store_true",
+                   help="auto-report successful builds to gpkg registry")
+    p.add_argument("--no-report", action="store_true",
+                   help="suppress build report prompt")
     p.add_argument("-V", "--version", action="version", version=f"%(prog)s {__import__('gpkg').__version__}")
 
     try:
@@ -642,7 +650,7 @@ def main() -> None:
     # Detect subcommand from first positional arg
     command = None
     positionals = args.command_or_packages or []
-    if positionals and positionals[0] in ("add", "install", "test", "stack"):
+    if positionals and positionals[0] in ("add", "install", "test", "stack", "compat"):
         command = positionals[0]
         args.packages = positionals[1:]
     else:
@@ -656,6 +664,10 @@ def main() -> None:
             p.error("gpkg add requires package names (e.g. gpkg add flash-attn)")
         args.build_missing = True
         args.defer_builds = True
+
+    if command == "compat":
+        if not args.packages:
+            p.error("gpkg compat requires package names")
 
     # -- Commands that don't need network ----------------------------------
 
@@ -736,6 +748,43 @@ def main() -> None:
     console.print(f"  torch={torch_ver}  cuda={cuda_ver}  python={py_ver}  platform={plat}  cxx11abi={args.cxx11_abi}\n")
 
     results, all_matches = _resolve_packages(args, pkg_sources, client, torch_ver, cuda_ver, py_ver, plat)
+
+    # -- Compatibility resolution ------------------------------------------
+    if command == "compat" or (command == "add" and len(args.packages) > 1 and not args.no_resolve):
+        from gpkg.resolver import resolve, format_resolve_result, present_options
+        from gpkg.matching import search_all_versions
+
+        versioned = search_all_versions(all_matches)
+        env = {"torch": torch_ver, "cuda": cuda_ver, "python": py_ver, "platform": plat}
+
+        resolve_result = resolve(
+            all_versions=versioned,
+            env=env,
+            sources=all_sources,
+            client=client,
+        )
+
+        if resolve_result is not None:
+            if command == "compat":
+                # Dry-run: just show results
+                console.print(format_resolve_result(resolve_result))
+                client.close()
+                return
+
+            if resolve_result.chosen.conflicts and resolve_result.alternatives:
+                chosen = present_options(resolve_result)
+                if chosen is None:
+                    console.print("\n[yellow]Aborted.[/yellow]")
+                    client.close()
+                    return
+                # Update results with chosen versions
+                results = {m.package: m for m in chosen.matches}
+            elif not resolve_result.chosen.conflicts:
+                if not resolve_result.from_cache:
+                    console.print(format_resolve_result(resolve_result))
+                else:
+                    console.print(f"\n  [green]✓[/green] Known compatible set")
+                results = {m.package: m for m in resolve_result.chosen.matches}
 
     # -- Show all matches --------------------------------------------------
     if args.all and any(all_matches.values()):

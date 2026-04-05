@@ -26,6 +26,8 @@ def write_lockfile(
     platform_tag: str,
     cxx11_abi: str,
     wheel_matches: dict[str, WheelMatch],
+    *,
+    resolution_status: str = "",
 ) -> None:
     """Write resolved wheels to a TOML lockfile for reproducible installs."""
     lines = [
@@ -38,8 +40,10 @@ def write_lockfile(
         f'python = "{python_ver}"',
         f'platform = "{platform_tag}"',
         f'cxx11_abi = "{cxx11_abi}"',
-        "",
     ]
+    if resolution_status:
+        lines.append(f'resolution_status = "{resolution_status}"')
+    lines.append("")
     for name, m in wheel_matches.items():
         lines.extend([
             "[[wheels]]",
