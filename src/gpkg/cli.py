@@ -766,7 +766,7 @@ def main() -> None:
     torch_adjustments: list[tuple[str, str]] = []
     if command in ("add", "compat", "analyze") and not args.torch:
         try:
-            from gpkg.analyzer import fetch_pypi_metadata, parse_pypi_requires_dist
+            from gpkg.analyzer import parse_pypi_requires_dist
             import re as _re
             for pkg in args.packages:
                 if pkg in pkg_sources:

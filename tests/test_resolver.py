@@ -178,12 +178,9 @@ def test_compat_cache_key_deterministic():
     """Same packages + env always produce the same cache key."""
     from gpkg.resolver import compat_cache_key
 
-    key1 = compat_cache_key(
-        ["flash-attn", "mamba-ssm"], "2.11", "128", "3.12", "linux_x86_64"
-    )
-    key2 = compat_cache_key(
-        ["mamba-ssm", "flash-attn"], "2.11", "128", "3.12", "linux_x86_64"
-    )
+    env = {"torch": "2.11", "cuda": "128", "python": "3.12", "platform": "linux_x86_64"}
+    key1 = compat_cache_key(["flash-attn", "mamba-ssm"], env)
+    key2 = compat_cache_key(["mamba-ssm", "flash-attn"], env)
     assert key1 == key2  # order-independent
 
 
@@ -191,8 +188,10 @@ def test_compat_cache_key_differs_by_env():
     """Different environments produce different keys."""
     from gpkg.resolver import compat_cache_key
 
-    key1 = compat_cache_key(["flash-attn"], "2.11", "128", "3.12", "linux_x86_64")
-    key2 = compat_cache_key(["flash-attn"], "2.10", "128", "3.12", "linux_x86_64")
+    env1 = {"torch": "2.11", "cuda": "128", "python": "3.12", "platform": "linux_x86_64"}
+    env2 = {"torch": "2.10", "cuda": "128", "python": "3.12", "platform": "linux_x86_64"}
+    key1 = compat_cache_key(["flash-attn"], env1)
+    key2 = compat_cache_key(["flash-attn"], env2)
     assert key1 != key2
 
 

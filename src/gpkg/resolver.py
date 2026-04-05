@@ -128,13 +128,19 @@ def _parse_dep(req: str) -> tuple[str, Optional[SpecifierSet]]:
 # Conflict detection
 # ---------------------------------------------------------------------------
 
-# Representative versions to probe (covers the realistic numpy/scipy/etc range)
-_PROBE_VERSIONS = [
-    Version(f"{major}.{minor}.{patch}")
-    for major in range(0, 10)
-    for minor in range(0, 30)
-    for patch in (0,)
-]
+# Lazy-initialized probe versions (avoids 300 Version objects at import time)
+_PROBE_VERSIONS: Optional[list[Version]] = None
+
+
+def _get_probe_versions() -> list[Version]:
+    global _PROBE_VERSIONS
+    if _PROBE_VERSIONS is None:
+        _PROBE_VERSIONS = [
+            Version(f"{major}.{minor}.0")
+            for major in range(10)
+            for minor in range(30)
+        ]
+    return _PROBE_VERSIONS
 
 
 def check_conflicts(combo_metadata: list[PackageMetadata]) -> list[Conflict]:
@@ -179,7 +185,7 @@ def check_conflicts(combo_metadata: list[PackageMetadata]) -> list[Conflict]:
         # Check if any probe version satisfies ALL specifiers
         satisfiable = any(
             all(spec.contains(v) for spec in all_specs)
-            for v in _PROBE_VERSIONS
+            for v in _get_probe_versions()
         )
 
         if not satisfiable:
@@ -230,13 +236,7 @@ def _compat_cache_dir() -> Path:
     return d
 
 
-def compat_cache_key(
-    packages: list[str],
-    torch: str,
-    cuda: str,
-    python: str,
-    platform: str,
-) -> str:
+def compat_cache_key(packages: list[str], env: dict[str, str]) -> str:
     """Return a stable 16-char hex cache key for the given packages + env.
 
     Package names are normalized (lowercase, _ -> -) and sorted so that
@@ -246,7 +246,7 @@ def compat_cache_key(
         re.sub(r"[-_.]+", "-", p).lower() for p in packages
     )
     pkg_part = "+".join(normalized)
-    raw = f"{pkg_part}_cu{cuda}_torch{torch}_py{python}_{platform}"
+    raw = f"{pkg_part}_cu{env['cuda']}_torch{env['torch']}_py{env['python']}_{env['platform']}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -260,13 +260,7 @@ def write_compat_cache(
     if cache_dir is None:
         cache_dir = _compat_cache_dir()
 
-    key = compat_cache_key(
-        packages,
-        env["torch"],
-        env["cuda"],
-        env["python"],
-        env["platform"],
-    )
+    key = compat_cache_key(packages, env)
     path = Path(cache_dir) / f"{key}.toml"
 
     lines: list[str] = []
@@ -312,13 +306,7 @@ def read_compat_cache(
     if cache_dir is None:
         cache_dir = _compat_cache_dir()
 
-    key = compat_cache_key(
-        packages,
-        env["torch"],
-        env["cuda"],
-        env["python"],
-        env["platform"],
-    )
+    key = compat_cache_key(packages, env)
     path = Path(cache_dir) / f"{key}.toml"
 
     if not path.exists():
@@ -353,13 +341,7 @@ def lookup_known_good(
     if client is None:
         return None
 
-    key = compat_cache_key(
-        packages,
-        env["torch"],
-        env["cuda"],
-        env["python"],
-        env["platform"],
-    )
+    key = compat_cache_key(packages, env)
     url = f"https://wheels.mapika.dev/compat/{key}.toml"
 
     try:
@@ -544,8 +526,12 @@ def _fetch_wheel_metadata_http(url: str, client) -> Optional[str]:
                                         return decompressed.decode("utf-8", errors="replace")
                         pos = entry_pos + 46 + fname_len + extra_len + comment_len
 
-        # Fallback: download full wheel and extract with zipfile
-        full_resp = client.get(url)
+        # Fallback: download full wheel (skip if >100MB to avoid OOM)
+        head_resp = client.head(url, timeout=10)
+        content_length = int(head_resp.headers.get("content-length", 0))
+        if content_length > 100 * 1024 * 1024:
+            return None
+        full_resp = client.get(url, timeout=120)
         if full_resp.status_code == 200:
             with zipfile.ZipFile(io.BytesIO(full_resp.content)) as zf:
                 for name in zf.namelist():
@@ -697,9 +683,7 @@ def resolve(
                         break
 
         if len(cache_matches) == len(packages):
-            key = compat_cache_key(
-                packages, env["torch"], env["cuda"], env["python"], env["platform"]
-            )
+            key = compat_cache_key(packages, env)
             return ResolveResult(
                 chosen=Combo(matches=cache_matches, conflicts=[], score=0.0),
                 alternatives=[],
@@ -715,14 +699,18 @@ def resolve(
         return None
 
     # 3. Fetch metadata + detect conflicts for each combo
+    # Pre-fetch metadata once per (package, version) to avoid redundant lookups
+    _meta_cache: dict[tuple[str, str], list[str]] = {}
     for combo in combos:
         metadata_list: list[PackageMetadata] = []
         for match in combo.matches:
-            requires = fetch_metadata(match, sources, client)
+            key = (match.package, match.version)
+            if key not in _meta_cache:
+                _meta_cache[key] = fetch_metadata(match, sources, client) or []
             metadata_list.append(PackageMetadata(
                 package=match.package,
                 version=match.version,
-                requires_dist=requires or [],
+                requires_dist=_meta_cache[key],
             ))
 
         combo.conflicts = check_conflicts(metadata_list)
@@ -779,9 +767,7 @@ def resolve(
 
     # 6. Cache the winner
     winner = combos[0]
-    cache_key = compat_cache_key(
-        packages, env["torch"], env["cuda"], env["python"], env["platform"]
-    )
+    cache_key = compat_cache_key(packages, env)
 
     if not winner.conflicts:
         compat = CompatSet(

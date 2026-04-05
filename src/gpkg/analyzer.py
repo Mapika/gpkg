@@ -230,7 +230,9 @@ def parse_pypi_requires_dist(pypi_data: dict, python_version: str = "3.12") -> l
 
 def fetch_pypi_metadata(package: str, version: str, client, cache_dir: Optional[Path] = None) -> Optional[dict]:
     """Fetch package metadata from PyPI JSON API with local caching.
+
     Cache is permanent (PyPI releases are immutable).
+    Only caches the info dict (requires_dist + version), not the full response.
     """
     cache_dir = cache_dir or _pypi_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -246,9 +248,11 @@ def fetch_pypi_metadata(package: str, version: str, client, cache_dir: Optional[
     try:
         resp = client.get(f"https://pypi.org/pypi/{package}/{version}/json", timeout=15)
         if resp.status_code == 200:
-            data = resp.json()
-            cache_file.write_text(json.dumps(data))
-            return data
+            full = resp.json()
+            # Cache only the info we need, not the full response (saves ~100KB per entry)
+            slim = {"info": {"requires_dist": full.get("info", {}).get("requires_dist")}}
+            cache_file.write_text(json.dumps(slim))
+            return slim
     except Exception:
         pass
     return None
