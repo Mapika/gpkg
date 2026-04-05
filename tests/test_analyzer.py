@@ -440,3 +440,95 @@ def test_resolver_calls_analyzer_on_conflict(tmp_path):
     assert len(result.analyses) > 0
     assert result.analyses[0].relaxable is True
     assert "2.0" in result.analyses[0].safe_range
+
+
+def test_full_boltz_scenario(tmp_path):
+    """End-to-end: boltz pins numpy<2.0, flash-attn needs numpy>=2.0.
+
+    Analyzer should find that boltz's pin is relaxable because
+    none of its transitive deps actually need numpy<2.0.
+    """
+    from gpkg.analyzer import analyze_constraint, format_analysis
+    import json
+
+    cache = tmp_path / "pypi"
+    cache.mkdir()
+
+    (cache / "boltz-2.2.1.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.26,<2.0)",
+                "numba (==0.61.0)",
+                "scipy (==1.13.1)",
+                "torch (>=2.2)",
+                "einops (==0.8.0)",
+            ]
+        }
+    }))
+    (cache / "numba-0.61.0.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.24,<2.2)",
+                "llvmlite (==0.43.0)",
+            ]
+        }
+    }))
+    (cache / "scipy-1.13.1.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.22.4,<2.3)",
+            ]
+        }
+    }))
+    (cache / "llvmlite-0.43.0.json").write_text(json.dumps({
+        "info": {"requires_dist": []}
+    }))
+    (cache / "einops-0.8.0.json").write_text(json.dumps({
+        "info": {"requires_dist": ["numpy"]}
+    }))
+
+    result = analyze_constraint(
+        blocker_pkg="boltz",
+        blocker_version="2.2.1",
+        dep_name="numpy",
+        stated_spec=">=1.26,<2.0",
+        required_spec=">=2.0",
+        client=None,
+        cache_dir=cache,
+    )
+
+    # Should be relaxable
+    assert result.relaxable is True
+
+    # Safe range should be >=2.0,<2.2 (bounded by numba's upper)
+    assert result.safe_range is not None
+    assert "2.0" in result.safe_range
+    assert "2.2" in result.safe_range
+
+    # Evidence should mention numba and scipy
+    evidence_text = " ".join(result.evidence)
+    assert "numba" in evidence_text
+    assert "scipy" in evidence_text
+
+    # Format should be readable
+    output = format_analysis(result)
+    assert "relaxable" in output.lower() or "Relaxable" in output
+    assert "boltz" in output
+
+    # Now test the opposite: if llvmlite also pins numpy<2.0, NOT relaxable
+    (cache / "llvmlite-0.43.0.json").write_text(json.dumps({
+        "info": {"requires_dist": ["numpy (>=1.20,<2.0)"]}
+    }))
+
+    result2 = analyze_constraint(
+        blocker_pkg="boltz",
+        blocker_version="2.2.1",
+        dep_name="numpy",
+        stated_spec=">=1.26,<2.0",
+        required_spec=">=2.0",
+        client=None,
+        cache_dir=cache,
+    )
+
+    assert result2.relaxable is False
+    assert result2.safe_range is None
