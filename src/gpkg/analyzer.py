@@ -252,3 +252,98 @@ def fetch_pypi_metadata(package: str, version: str, client, cache_dir: Optional[
     except Exception:
         pass
     return None
+
+
+def _parse_dep_name_and_spec(req: str) -> tuple[str, str]:
+    """Parse a requires_dist entry into (normalized_name, specifier).
+
+    'numpy (>=1.24,<2.2)' -> ('numpy', '>=1.24,<2.2')
+    'torch' -> ('torch', '')
+    'causal-conv1d>=1.4.0' -> ('causal_conv1d', '>=1.4.0')
+    """
+    req = req.strip()
+    # Parenthesized: 'numpy (>=1.24,<2.2)'
+    m = re.match(r"^([a-zA-Z0-9_.-]+)\s*\((.+)\)\s*$", req)
+    if m:
+        return m.group(1).lower().replace("-", "_").replace(".", "_"), m.group(2).strip()
+    # Inline: 'numpy>=1.24'
+    for op in (">=", "<=", "!=", "==", "~=", ">", "<"):
+        if op in req:
+            idx = req.index(op)
+            name = req[:idx].strip().lower().replace("-", "_").replace(".", "_")
+            spec = req[idx:].strip()
+            return name, spec
+    return req.strip().lower().replace("-", "_").replace(".", "_"), ""
+
+
+def _resolve_version_for_spec(spec_str: str, package: str, client, cache_dir) -> Optional[str]:
+    """Given a specifier, find the version to crawl.
+
+    For pinned specs (==X.Y.Z), returns X.Y.Z directly.
+    For range specs without a client, returns None.
+    """
+    if not spec_str:
+        return None
+    # Exact pin
+    m = re.match(r"^==\s*([^\s,*]+)$", spec_str)
+    if m:
+        return m.group(1)
+    # For range specs, need client to query PyPI
+    if client is None:
+        return None
+    try:
+        resp = client.get(f"https://pypi.org/pypi/{package}/json", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            from packaging.specifiers import SpecifierSet
+            all_versions = sorted(data.get("releases", {}).keys(),
+                                  key=lambda v: Version(v), reverse=True)
+            spec = SpecifierSet(spec_str)
+            for v in all_versions:
+                try:
+                    if v in spec:
+                        return v
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None
+
+
+def crawl_dep_tree(
+    package: str, version: str, client,
+    cache_dir: Optional[Path] = None, python_version: str = "3.12",
+) -> dict[str, dict[str, str]]:
+    """Walk a package's full dependency tree.
+
+    Returns: {dep_name: {constraining_pkg: specifier_str, ...}, ...}
+    """
+    constraints: dict[str, dict[str, str]] = {}
+    visited: set[str] = set()
+
+    def _walk(pkg: str, ver: str) -> None:
+        key = f"{pkg}=={ver}"
+        if key in visited:
+            return
+        visited.add(key)
+
+        data = fetch_pypi_metadata(pkg, ver, client, cache_dir=cache_dir)
+        if data is None:
+            return
+
+        requires = parse_pypi_requires_dist(data, python_version)
+        pkg_normalized = pkg.lower().replace("-", "_").replace(".", "_")
+
+        for req in requires:
+            dep_name, spec = _parse_dep_name_and_spec(req)
+            if not dep_name:
+                continue
+            if spec:
+                constraints.setdefault(dep_name, {})[pkg_normalized] = spec
+            # Recurse
+            dep_ver = _resolve_version_for_spec(spec, dep_name, client, cache_dir)
+            if dep_ver:
+                _walk(dep_name, dep_ver)
+
+    _walk(package, version)
+    return constraints

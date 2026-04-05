@@ -154,3 +154,83 @@ def test_parse_pypi_requires_dist_no_deps():
     pypi_data = {"info": {"requires_dist": None}}
     result = parse_pypi_requires_dist(pypi_data, python_version="3.12")
     assert result == []
+
+
+def test_crawl_dep_tree_simple(tmp_path):
+    """Crawl a simple dep tree with mocked PyPI data."""
+    from gpkg.analyzer import crawl_dep_tree
+    import json
+
+    cache = tmp_path / "pypi"
+    cache.mkdir()
+
+    (cache / "boltz-2.2.1.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.26,<2.0)",
+                "numba (==0.61.0)",
+                "scipy (==1.13.1)",
+            ]
+        }
+    }))
+    (cache / "numba-0.61.0.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.24,<2.2)",
+                "llvmlite (>=0.43)",
+            ]
+        }
+    }))
+    (cache / "scipy-1.13.1.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.22,<2.3)",
+            ]
+        }
+    }))
+    (cache / "llvmlite-0.43.0.json").write_text(json.dumps({
+        "info": {"requires_dist": []}
+    }))
+
+    tree = crawl_dep_tree("boltz", "2.2.1", client=None, cache_dir=cache)
+
+    assert "numpy" in tree
+    assert "boltz" in tree["numpy"]
+    assert "numba" in tree["numpy"]
+    assert "scipy" in tree["numpy"]
+    assert tree["numpy"]["boltz"] == ">=1.26,<2.0"
+
+
+def test_crawl_dep_tree_cycle(tmp_path):
+    """Crawler handles cycles without infinite loop."""
+    from gpkg.analyzer import crawl_dep_tree
+    import json
+
+    cache = tmp_path / "pypi"
+    cache.mkdir()
+
+    (cache / "a-1.0.json").write_text(json.dumps({
+        "info": {"requires_dist": ["b (>=1.0)"]}
+    }))
+    (cache / "b-1.0.json").write_text(json.dumps({
+        "info": {"requires_dist": ["a (>=1.0)"]}
+    }))
+
+    tree = crawl_dep_tree("a", "1.0", client=None, cache_dir=cache)
+    assert isinstance(tree, dict)
+
+
+def test_crawl_dep_tree_missing_package(tmp_path):
+    """Crawler handles missing packages gracefully."""
+    from gpkg.analyzer import crawl_dep_tree
+    import json
+
+    cache = tmp_path / "pypi"
+    cache.mkdir()
+
+    (cache / "a-1.0.json").write_text(json.dumps({
+        "info": {"requires_dist": ["nonexistent-pkg (>=1.0)"]}
+    }))
+
+    tree = crawl_dep_tree("a", "1.0", client=None, cache_dir=cache)
+    assert isinstance(tree, dict)
