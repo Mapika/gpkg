@@ -759,11 +759,53 @@ def main() -> None:
 
     torch_ver = args.torch or detect_torch()
     cuda_ver = args.cuda or detect_cuda()
+    py_ver = args.python or detect_python()
+
+    # -- Detect torch pins from packages being added ----------------------
+    # Must run BEFORE the torch_ver check so we can set it from the pin
+    torch_adjustments: list[tuple[str, str]] = []
+    if command in ("add", "compat", "analyze") and not args.torch:
+        try:
+            from gpkg.analyzer import fetch_pypi_metadata, parse_pypi_requires_dist
+            import re as _re
+            for pkg in args.packages:
+                if pkg in pkg_sources:
+                    continue  # GPU package in registry, skip
+                # Check PyPI for torch pins
+                data = None
+                try:
+                    resp = client.get(f"https://pypi.org/pypi/{pkg}/json", timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                except Exception:
+                    pass
+                if data is None:
+                    continue
+                requires = parse_pypi_requires_dist(data, py_ver or "3.12")
+                for req in requires:
+                    m = _re.match(r"torch\s*==\s*([0-9.]+)", req.strip())
+                    if m:
+                        pinned = m.group(1)
+                        cur = torch_ver or ""
+                        if pinned != cur and pinned != cur.split("+")[0]:
+                            torch_adjustments.append((pkg, pinned))
+                        break
+        except Exception:
+            pass
+
+    if torch_adjustments:
+        pkg_name, pinned_torch = torch_adjustments[0]
+        if torch_ver:
+            console.print(f"\n[bold yellow]⚠[/bold yellow]  {pkg_name} requires [bold]torch=={pinned_torch}[/bold] (you have {torch_ver})")
+            console.print(f"  Adjusting torch version to {pinned_torch} for compatibility\n")
+        else:
+            console.print(f"\n[bold]ℹ[/bold]  {pkg_name} requires [bold]torch=={pinned_torch}[/bold] — using that version\n")
+        torch_ver = pinned_torch
+
     if not torch_ver:
         p.error("--torch required (could not auto-detect; is PyTorch installed?)")
     if not cuda_ver:
         p.error("--cuda required (could not auto-detect; is nvcc or PyTorch+CUDA available?)")
-    py_ver = args.python or detect_python()
 
     console.print("\n[bold]gpkg[/bold] -- searching prebuilt wheels")
     console.print(f"  torch={torch_ver}  cuda={cuda_ver}  python={py_ver}  platform={plat}  cxx11abi={args.cxx11_abi}\n")
