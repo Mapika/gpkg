@@ -650,7 +650,7 @@ def main() -> None:
     # Detect subcommand from first positional arg
     command = None
     positionals = args.command_or_packages or []
-    if positionals and positionals[0] in ("add", "install", "test", "stack", "compat"):
+    if positionals and positionals[0] in ("add", "install", "test", "stack", "compat", "analyze"):
         command = positionals[0]
         args.packages = positionals[1:]
     else:
@@ -668,6 +668,27 @@ def main() -> None:
     if command == "compat":
         if not args.packages:
             p.error("gpkg compat requires package names")
+
+    if command == "analyze":
+        if not args.packages:
+            pyproject_path = Path(args.output or "pyproject.toml")
+            if pyproject_path.exists():
+                try:
+                    import tomllib as _tl
+                except ModuleNotFoundError:
+                    import tomli as _tl  # type: ignore[no-redef]
+                with open(pyproject_path, "rb") as f:
+                    pyproject = _tl.load(f)
+                deps = pyproject.get("project", {}).get("dependencies", [])
+                if deps:
+                    import re as _re
+                    args.packages = []
+                    for dep in deps:
+                        name = _re.split(r"[>=<!\s\[]", dep)[0].strip()
+                        if name:
+                            args.packages.append(name)
+            if not args.packages:
+                p.error("gpkg analyze requires package names or a pyproject.toml with dependencies")
 
     # -- Commands that don't need network ----------------------------------
 
@@ -765,9 +786,28 @@ def main() -> None:
         )
 
         if resolve_result is not None:
+            if hasattr(resolve_result, 'analyses') and resolve_result.analyses:
+                from gpkg.analyzer import format_analysis
+                console.print()
+                for analysis in resolve_result.analyses:
+                    console.print(format_analysis(analysis))
+                console.print()
+
             if command == "compat":
                 # Dry-run: just show results
                 console.print(format_resolve_result(resolve_result))
+                client.close()
+                return
+
+            if command == "analyze":
+                if resolve_result.analyses:
+                    from gpkg.analyzer import format_analysis
+                    console.print("\n[bold]Constraint Analysis:[/bold]\n")
+                    for analysis in resolve_result.analyses:
+                        console.print(format_analysis(analysis))
+                else:
+                    console.print("\n  No relaxable constraints found.")
+                console.print()
                 client.close()
                 return
 
