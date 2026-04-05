@@ -126,3 +126,31 @@ def test_interval_to_specifier_upper_only():
     iv, _ = specifier_to_interval("<3.0")
     s = interval_to_specifier(iv)
     assert s == "<3.0"
+
+
+def test_parse_pypi_requires_dist():
+    """Parse requires_dist from PyPI JSON response."""
+    from gpkg.analyzer import parse_pypi_requires_dist
+
+    pypi_data = {
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.24,<2.2)",
+                "llvmlite (<0.44,>=0.43.0dev0)",
+                "importlib-metadata ; python_version < \"3.9\"",
+            ]
+        }
+    }
+    result = parse_pypi_requires_dist(pypi_data, python_version="3.12")
+    assert any("numpy" in r for r in result)
+    assert any("llvmlite" in r for r in result)
+    assert len(result) == 2
+
+
+def test_parse_pypi_requires_dist_no_deps():
+    """Package with no dependencies."""
+    from gpkg.analyzer import parse_pypi_requires_dist
+
+    pypi_data = {"info": {"requires_dist": None}}
+    result = parse_pypi_requires_dist(pypi_data, python_version="3.12")
+    assert result == []
