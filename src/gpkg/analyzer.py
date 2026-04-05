@@ -347,3 +347,76 @@ def crawl_dep_tree(
 
     _walk(package, version)
     return constraints
+
+
+@dataclass
+class ConstraintAnalysis:
+    """Result of analyzing whether a constraint is relaxable."""
+    blocker: str
+    dependency: str
+    stated_range: str
+    real_range: Optional[str]
+    safe_range: Optional[str]
+    relaxable: bool
+    evidence: list[str] = field(default_factory=list)
+
+
+def analyze_constraint(
+    blocker_pkg: str,
+    blocker_version: str,
+    dep_name: str,
+    stated_spec: str,
+    required_spec: str,
+    client,
+    cache_dir: Optional[Path] = None,
+    python_version: str = "3.12",
+) -> ConstraintAnalysis:
+    """Analyze whether a constraint pin is necessary or conservative."""
+    normalized_dep = dep_name.lower().replace("-", "_").replace(".", "_")
+
+    tree = crawl_dep_tree(
+        blocker_pkg, blocker_version, client,
+        cache_dir=cache_dir, python_version=python_version,
+    )
+
+    transitive_constraints = tree.get(normalized_dep, {})
+    blocker_normalized = blocker_pkg.lower().replace("-", "_").replace(".", "_")
+
+    evidence = []
+    intervals = []
+    for pkg, spec in transitive_constraints.items():
+        if pkg == blocker_normalized:
+            continue
+        evidence.append(f"{pkg} requires {dep_name}{spec}")
+        iv, _ = specifier_to_interval(spec)
+        intervals.append(iv)
+
+    if intervals:
+        real_iv = intersect_intervals(intervals)
+        real_range = interval_to_specifier(real_iv) if real_iv else None
+    else:
+        real_iv = VersionInterval()
+        real_range = "*"
+
+    required_iv, _ = specifier_to_interval(required_spec)
+
+    if real_iv is not None:
+        safe_iv = intersect_intervals([real_iv, required_iv])
+        safe_range = interval_to_specifier(safe_iv) if safe_iv else None
+    else:
+        safe_range = None
+
+    relaxable = safe_range is not None
+
+    if not intervals:
+        evidence.append(f"No transitive dep constrains {dep_name}")
+
+    return ConstraintAnalysis(
+        blocker=blocker_pkg,
+        dependency=dep_name,
+        stated_range=stated_spec,
+        real_range=real_range,
+        safe_range=safe_range,
+        relaxable=relaxable,
+        evidence=evidence,
+    )

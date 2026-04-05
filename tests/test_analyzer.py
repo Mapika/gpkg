@@ -234,3 +234,114 @@ def test_crawl_dep_tree_missing_package(tmp_path):
 
     tree = crawl_dep_tree("a", "1.0", client=None, cache_dir=cache)
     assert isinstance(tree, dict)
+
+
+def test_analyze_relaxable_pin(tmp_path):
+    """Boltz's numpy<2.0 is relaxable when no transitive dep needs it."""
+    from gpkg.analyzer import analyze_constraint, ConstraintAnalysis
+    import json
+
+    cache = tmp_path / "pypi"
+    cache.mkdir()
+
+    (cache / "boltz-2.2.1.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.26,<2.0)",
+                "numba (==0.61.0)",
+                "scipy (==1.13.1)",
+            ]
+        }
+    }))
+    (cache / "numba-0.61.0.json").write_text(json.dumps({
+        "info": {"requires_dist": ["numpy (>=1.24,<2.2)"]}
+    }))
+    (cache / "scipy-1.13.1.json").write_text(json.dumps({
+        "info": {"requires_dist": ["numpy (>=1.22,<2.3)"]}
+    }))
+
+    result = analyze_constraint(
+        blocker_pkg="boltz",
+        blocker_version="2.2.1",
+        dep_name="numpy",
+        stated_spec=">=1.26,<2.0",
+        required_spec=">=2.0",
+        client=None,
+        cache_dir=cache,
+    )
+
+    assert result.relaxable is True
+    assert result.safe_range is not None
+    assert "2.0" in result.safe_range
+    assert "2.2" in result.safe_range
+    assert len(result.evidence) >= 2
+
+
+def test_analyze_load_bearing_pin(tmp_path):
+    """Pin is load-bearing when a transitive dep also requires it."""
+    from gpkg.analyzer import analyze_constraint
+    import json
+
+    cache = tmp_path / "pypi"
+    cache.mkdir()
+
+    (cache / "pkg_a-1.0.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.26,<2.0)",
+                "old-lib (==1.0)",
+            ]
+        }
+    }))
+    (cache / "old_lib-1.0.json").write_text(json.dumps({
+        "info": {"requires_dist": ["numpy (>=1.20,<2.0)"]}
+    }))
+
+    result = analyze_constraint(
+        blocker_pkg="pkg-a",
+        blocker_version="1.0",
+        dep_name="numpy",
+        stated_spec=">=1.26,<2.0",
+        required_spec=">=2.0",
+        client=None,
+        cache_dir=cache,
+    )
+
+    assert result.relaxable is False
+    assert result.safe_range is None
+
+
+def test_analyze_no_transitive_constraints(tmp_path):
+    """When no transitive dep constrains the dep, pin is relaxable."""
+    from gpkg.analyzer import analyze_constraint
+    import json
+
+    cache = tmp_path / "pypi"
+    cache.mkdir()
+
+    (cache / "pkg_a-1.0.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.26,<2.0)",
+                "requests (>=2.0)",
+            ]
+        }
+    }))
+    (cache / "requests-2.32.3.json").write_text(json.dumps({
+        "info": {"requires_dist": ["urllib3 (>=1.21)"]}
+    }))
+    (cache / "urllib3-2.0.0.json").write_text(json.dumps({
+        "info": {"requires_dist": []}
+    }))
+
+    result = analyze_constraint(
+        blocker_pkg="pkg-a",
+        blocker_version="1.0",
+        dep_name="numpy",
+        stated_spec=">=1.26,<2.0",
+        required_spec=">=2.0",
+        client=None,
+        cache_dir=cache,
+    )
+
+    assert result.relaxable is True
