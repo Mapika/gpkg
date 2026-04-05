@@ -266,13 +266,17 @@ def _parse_dep_name_and_spec(req: str) -> tuple[str, str]:
     m = re.match(r"^([a-zA-Z0-9_.-]+)\s*\((.+)\)\s*$", req)
     if m:
         return m.group(1).lower().replace("-", "_").replace(".", "_"), m.group(2).strip()
-    # Inline: 'numpy>=1.24'
+    # Inline: 'numpy>=1.24' or 'numpy<2.2,>=1.24'
+    # Find the earliest version operator to split name from spec
+    earliest_idx = len(req)
     for op in (">=", "<=", "!=", "==", "~=", ">", "<"):
-        if op in req:
-            idx = req.index(op)
-            name = req[:idx].strip().lower().replace("-", "_").replace(".", "_")
-            spec = req[idx:].strip()
-            return name, spec
+        idx = req.find(op)
+        if idx != -1 and idx < earliest_idx:
+            earliest_idx = idx
+    if earliest_idx < len(req):
+        name = req[:earliest_idx].strip().lower().replace("-", "_").replace(".", "_")
+        spec = req[earliest_idx:].strip()
+        return name, spec
     return req.strip().lower().replace("-", "_").replace(".", "_"), ""
 
 
