@@ -281,3 +281,52 @@ Requires-Dist: ninja ; extra == "build"
     assert "torch>=2.0" in result
     assert "einops" in result
     assert "packaging" in result
+
+
+def test_generate_candidates_basic():
+    """Generate combos from 2 packages x 2 versions each."""
+    from gpkg.resolver import generate_candidates, Combo
+    from gpkg.matching import WheelMatch
+
+    def make(pkg, ver):
+        return WheelMatch(pkg, f"{pkg}.whl", "", ver, "2.11", "128",
+                          "cp312-cp312", "linux_x86_64", "test", None, "")
+
+    all_versions = {
+        "a": [make("a", "2.0.0"), make("a", "1.0.0")],
+        "b": [make("b", "3.0.0"), make("b", "2.0.0")],
+    }
+    combos = generate_candidates(all_versions)
+    assert len(combos) == 4  # 2x2
+    # First combo should be newest of each (highest score)
+    versions = {m.package: m.version for m in combos[0].matches}
+    assert versions["a"] == "2.0.0"
+    assert versions["b"] == "3.0.0"
+
+
+def test_generate_candidates_single_package():
+    """Single package produces one combo per version."""
+    from gpkg.resolver import generate_candidates
+    from gpkg.matching import WheelMatch
+
+    def make(ver):
+        return WheelMatch("a", "a.whl", "", ver, "2.11", "128",
+                          "cp312-cp312", "linux_x86_64", "test", None, "")
+
+    combos = generate_candidates({"a": [make("2.0.0"), make("1.0.0")]})
+    assert len(combos) == 2
+
+
+def test_generate_candidates_gpu_pruning():
+    """Combos with mismatched torch versions are pruned."""
+    from gpkg.resolver import generate_candidates
+    from gpkg.matching import WheelMatch
+
+    all_versions = {
+        "a": [WheelMatch("a", "a.whl", "", "2.0.0", "2.11", "128",
+                          "cp312-cp312", "linux_x86_64", "test", None, "")],
+        "b": [WheelMatch("b", "b.whl", "", "1.0.0", "2.10", "128",
+                          "cp312-cp312", "linux_x86_64", "test", None, "")],
+    }
+    combos = generate_candidates(all_versions)
+    assert len(combos) == 0  # torch 2.11 vs 2.10 mismatch

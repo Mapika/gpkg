@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 from gpkg.matching import WheelMatch
+from gpkg.registry import Source, get_requires_for_version
 
 
 # ---------------------------------------------------------------------------
@@ -372,3 +374,61 @@ def lookup_known_good(
         return compat
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Candidate generation
+# ---------------------------------------------------------------------------
+
+
+def generate_candidates(
+    all_versions: dict[str, list[WheelMatch]],
+    max_per_package: int = 5,
+) -> list[Combo]:
+    """Generate candidate combos from all matching versions.
+
+    1. Cap each package to top N versions (newest first)
+    2. Cartesian product
+    3. Prune combos where torch/cuda/abi don't align
+    4. Sort by total recency (newest combo first)
+    """
+    if not all_versions:
+        return []
+
+    capped = {
+        pkg: versions[:max_per_package]
+        for pkg, versions in all_versions.items()
+    }
+
+    pkg_names = sorted(capped.keys())
+    version_lists = [capped[pkg] for pkg in pkg_names]
+
+    combos: list[Combo] = []
+    for combo_tuple in itertools.product(*version_lists):
+        matches = list(combo_tuple)
+
+        # GPU constraint pruning
+        torch_versions = {m.torch_version for m in matches if m.torch_version}
+        if len(torch_versions) > 1:
+            continue
+
+        cuda_tags = {m.cuda_tag for m in matches if m.cuda_tag}
+        if len(cuda_tags) > 1:
+            continue
+
+        abi_values = {m.cxx11_abi for m in matches if m.cxx11_abi is not None}
+        if len(abi_values) > 1:
+            continue
+
+        combos.append(Combo(matches=matches, conflicts=[], score=0.0))
+
+    # Sort by total recency (newest combo first)
+    combos.sort(
+        key=lambda c: sum(
+            sum(t * (100 ** i) for i, t in enumerate(reversed(m.version_tuple)))
+            for m in c.matches
+        ),
+        reverse=True,
+    )
+
+    return combos
