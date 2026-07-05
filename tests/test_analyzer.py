@@ -532,3 +532,39 @@ def test_full_boltz_scenario(tmp_path):
 
     assert result2.relaxable is False
     assert result2.safe_range is None
+
+
+def test_analyze_package_end_to_end(tmp_path):
+    """The gpkg analyze entry point: pick out restrictive constraints only."""
+    from gpkg.analyzer import analyze_package
+    import json
+
+    cache = tmp_path / "pypi"
+    cache.mkdir()
+
+    (cache / "boltz-2.2.1.json").write_text(json.dumps({
+        "info": {
+            "requires_dist": [
+                "numpy (>=1.26,<2.0)",
+                "torch (>=2.2)",
+                "requests",
+            ]
+        }
+    }))
+
+    name, version, analyses = analyze_package("boltz==2.2.1", client=None, cache_dir=cache)
+
+    assert name == "boltz"
+    assert version == "2.2.1"
+    # numpy has an upper bound; torch (lower bound only) and requests (bare) are skipped
+    assert [a.dependency for a in analyses] == ["numpy"]
+    assert analyses[0].relaxable is True
+
+
+def test_analyze_package_unknown(tmp_path):
+    """Unknown package (no client, no cache) raises LookupError."""
+    from gpkg.analyzer import analyze_package
+    import pytest
+
+    with pytest.raises(LookupError):
+        analyze_package("no-such-package==1.0", client=None, cache_dir=tmp_path)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -284,6 +285,45 @@ def _parse_dep_name_and_spec(req: str) -> tuple[str, str]:
     return req.strip().lower().replace("-", "_").replace(".", "_"), ""
 
 
+_version_list_cache: dict[str, list[str]] = {}
+_spec_resolve_cache: dict[tuple[str, str], Optional[str]] = {}
+
+_VERSION_LIST_TTL = 86400  # version lists only grow; a day-stale list is fine
+
+
+def _get_version_list(package: str, client, cache_dir) -> list[str]:
+    """All release versions of a package, newest first. Memoized + disk-cached."""
+    if package in _version_list_cache:
+        return _version_list_cache[package]
+
+    cache_dir = cache_dir or _pypi_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    normalized = package.lower().replace("-", "_").replace(".", "_")
+    cache_file = cache_dir / f"{normalized}-versions.json"
+
+    versions: list[str] = []
+    if cache_file.exists() and time.time() - cache_file.stat().st_mtime < _VERSION_LIST_TTL:
+        versions = json.loads(cache_file.read_text())
+    elif client is not None:
+        try:
+            resp = client.get(f"https://pypi.org/pypi/{package}/json", timeout=15)
+            if resp.status_code == 200:
+                raw = list(resp.json().get("releases", {}).keys())
+                parseable = []
+                for v in raw:
+                    try:
+                        parseable.append((Version(v), v))
+                    except Exception:
+                        continue
+                versions = [v for _, v in sorted(parseable, reverse=True)]
+                cache_file.write_text(json.dumps(versions))
+        except Exception:
+            pass
+
+    _version_list_cache[package] = versions
+    return versions
+
+
 def _resolve_version_for_spec(spec_str: str, package: str, client, cache_dir) -> Optional[str]:
     """Given a specifier, find the version to crawl.
 
@@ -299,23 +339,24 @@ def _resolve_version_for_spec(spec_str: str, package: str, client, cache_dir) ->
     # For range specs, need client to query PyPI
     if client is None:
         return None
+    key = (package, spec_str)
+    if key in _spec_resolve_cache:
+        return _spec_resolve_cache[key]
+    result = None
     try:
-        resp = client.get(f"https://pypi.org/pypi/{package}/json", timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            from packaging.specifiers import SpecifierSet
-            all_versions = sorted(data.get("releases", {}).keys(),
-                                  key=lambda v: Version(v), reverse=True)
-            spec = SpecifierSet(spec_str)
-            for v in all_versions:
-                try:
-                    if v in spec:
-                        return v
-                except Exception:
-                    continue
+        from packaging.specifiers import SpecifierSet
+        spec = SpecifierSet(spec_str)
+        for v in _get_version_list(package, client, cache_dir):
+            try:
+                if v in spec:
+                    result = v
+                    break
+            except Exception:
+                continue
     except Exception:
         pass
-    return None
+    _spec_resolve_cache[key] = result
+    return result
 
 
 def crawl_dep_tree(
@@ -378,14 +419,20 @@ def analyze_constraint(
     client,
     cache_dir: Optional[Path] = None,
     python_version: str = "3.12",
+    tree: Optional[dict[str, dict[str, str]]] = None,
 ) -> ConstraintAnalysis:
-    """Analyze whether a constraint pin is necessary or conservative."""
+    """Analyze whether a constraint pin is necessary or conservative.
+
+    Pass a pre-crawled tree to avoid re-crawling when analyzing several
+    constraints of the same blocker.
+    """
     normalized_dep = dep_name.lower().replace("-", "_").replace(".", "_")
 
-    tree = crawl_dep_tree(
-        blocker_pkg, blocker_version, client,
-        cache_dir=cache_dir, python_version=python_version,
-    )
+    if tree is None:
+        tree = crawl_dep_tree(
+            blocker_pkg, blocker_version, client,
+            cache_dir=cache_dir, python_version=python_version,
+        )
 
     transitive_constraints = tree.get(normalized_dep, {})
     blocker_normalized = blocker_pkg.lower().replace("-", "_").replace(".", "_")
@@ -406,7 +453,10 @@ def analyze_constraint(
         real_iv = VersionInterval()
         real_range = "*"
 
-    required_iv, _ = specifier_to_interval(required_spec)
+    if required_spec.strip():
+        required_iv, _ = specifier_to_interval(required_spec)
+    else:
+        required_iv = VersionInterval()
 
     if real_iv is not None:
         safe_iv = intersect_intervals([real_iv, required_iv])
@@ -430,14 +480,71 @@ def analyze_constraint(
     )
 
 
+def analyze_package(
+    package_spec: str,
+    client,
+    python_version: str = "3.12",
+    cache_dir: Optional[Path] = None,
+) -> tuple[str, str, list[ConstraintAnalysis]]:
+    """Analyze every restrictive constraint a package declares.
+
+    Accepts 'boltz' or 'boltz==2.2.1'. Analyzes each pinned or
+    upper-bounded dependency (==, <, <=, ~=); lower-bound-only and
+    unversioned deps are skipped. Returns (name, version, analyses).
+
+    Raises LookupError if the package or its metadata can't be found.
+    """
+    name, spec = _parse_dep_name_and_spec(package_spec)
+    version = _resolve_version_for_spec(spec, name, client, cache_dir)
+    if version is None and not spec and client is not None:
+        try:
+            resp = client.get(f"https://pypi.org/pypi/{name}/json", timeout=15)
+            if resp.status_code == 200:
+                version = resp.json().get("info", {}).get("version")
+        except Exception:
+            pass
+    if version is None:
+        raise LookupError(f"Could not find {package_spec} on PyPI")
+
+    data = fetch_pypi_metadata(name, version, client, cache_dir=cache_dir)
+    if data is None:
+        raise LookupError(f"Could not fetch metadata for {name}=={version}")
+
+    tree = crawl_dep_tree(
+        name, version, client, cache_dir=cache_dir, python_version=python_version,
+    )
+
+    analyses = []
+    for req in parse_pypi_requires_dist(data, python_version):
+        dep_name, dep_spec = _parse_dep_name_and_spec(req)
+        if not dep_name or not any(op in dep_spec for op in ("==", "<", "~=")):
+            continue
+        analyses.append(analyze_constraint(
+            blocker_pkg=name,
+            blocker_version=version,
+            dep_name=dep_name,
+            stated_spec=dep_spec,
+            required_spec="",
+            client=client,
+            cache_dir=cache_dir,
+            python_version=python_version,
+            tree=tree,
+        ))
+    return name, version, analyses
+
+
 def format_analysis(analysis: ConstraintAnalysis) -> str:
     """Format a ConstraintAnalysis as plain text for display."""
     lines = []
 
     if analysis.relaxable:
+        if analysis.safe_range == "*":
+            target = "any version"
+        else:
+            target = f"safe range: {analysis.dependency}{analysis.safe_range}"
         lines.append(
             f"  \u2713 {analysis.blocker}'s {analysis.dependency}{analysis.stated_range} "
-            f"is relaxable \u2192 safe range: {analysis.dependency}{analysis.safe_range}"
+            f"is relaxable \u2192 {target}"
         )
     else:
         lines.append(
