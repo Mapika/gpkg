@@ -1,6 +1,6 @@
 [project]
 name = "gpkg"
-version = "0.4.3"
+version = "0.5.0"
 description = "GPU package manager — find prebuilt CUDA wheels, build missing ones, generate uv pyproject.toml"
 readme = "README.md"
 license = "MIT"

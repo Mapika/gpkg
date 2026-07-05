@@ -1,0 +1,23 @@
+name: registry-health
+
+on:
+  schedule:
+    - cron: "17 5 * * *"   # nightly, 05:17 UTC
+  pull_request:
+    paths:
+      - "src/gpkg/registry.toml"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: uv sync
+      - name: Check every registry source serves matching wheels
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run gpkg doctor --no-cache --registry src/gpkg/registry.toml
