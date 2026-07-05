@@ -528,9 +528,10 @@ def _fetch_wheel_metadata_http(url: str, client) -> Optional[str]:
 
         # Fallback: download full wheel (skip if >100MB to avoid OOM)
         head_resp = client.head(url, timeout=10)
-        content_length = int(head_resp.headers.get("content-length", 0))
-        if content_length > 100 * 1024 * 1024:
-            return None
+        if head_resp.status_code == 200:
+            content_length = int(head_resp.headers.get("content-length", 0))
+            if content_length > 100 * 1024 * 1024:
+                return None
         full_resp = client.get(url, timeout=120)
         if full_resp.status_code == 200:
             with zipfile.ZipFile(io.BytesIO(full_resp.content)) as zf:
