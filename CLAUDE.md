@@ -15,10 +15,12 @@ src/gpkg/
   cli.py           — main() + argparse
   registry.py      — Source dataclass, registry loading
   matching.py      — WheelMatch, matchers, search pipeline
+  resolver.py      — compatibility resolver: candidate combos, conflicts, trial resolve
+  analyzer.py      — constraint analysis: interval arithmetic, dep-tree crawl, relaxability
   cache.py         — disk cache, find-links fetch, auth
   build.py         — GPU detection, ninja, wheel cache, build_wheel
   detect.py        — platform, python, cuda, torch detection
-  doctor.py        — URL verification
+  doctor.py        — URL/hash verification, registry source health checks
   lockfile.py      — lockfile read/write/compare
   output.py        — TOML generation, formatters
   registry.toml    — community-maintained wheel sources
