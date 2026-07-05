@@ -12,8 +12,10 @@ jobs:
       matrix:
         python-version: ["3.10", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8
+        with:
+          cache-dependency-glob: "pyproject.toml"
       - run: uv python install ${{ matrix.python-version }}
       - run: uv sync --dev
       - run: uv run pytest -v
@@ -22,8 +24,10 @@ jobs:
   registry-health:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8
+        with:
+          cache-dependency-glob: "pyproject.toml"
       - run: uv sync
       - name: Validate registry TOML parses
         run: |

@@ -17,3 +17,5 @@ Screenshot*
 *.html
 docs/superpowers/
 .playwright-mcp/
+.agents/
+skills-lock.json
