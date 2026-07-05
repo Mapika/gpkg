@@ -53,8 +53,11 @@ def write_lockfile(
             f'url = "{unquote(m.url)}"',
             f'source = "{m.source_desc}"',
             f'release_tag = "{m.release_tag}"',
-            "",
         ])
+        sha = getattr(m, "sha256", "")
+        if sha:
+            lines.append(f'sha256 = "{sha}"')
+        lines.append("")
     with open(path, "w") as f:
         f.write("\n".join(lines))
 
@@ -116,6 +119,7 @@ def lockfile_to_wheel_matches(lock_data: dict) -> tuple[dict[str, str], dict]:
             "version": w["version"],
             "source_desc": w.get("source", ""),
             "release_tag": w.get("release_tag", ""),
+            "sha256": w.get("sha256", ""),
         }
     return env, wheels
 

@@ -37,6 +37,7 @@ class WheelMatch:
     source_desc: str
     cxx11_abi: Optional[str] = None
     release_tag: str = ""
+    sha256: str = ""  # source-attested hash (GitHub asset digest / index fragment)
 
     @property
     def version_tuple(self) -> tuple[int, ...]:
@@ -131,6 +132,9 @@ def cuda_matches(tag: str, style: str, target_cuda: str) -> bool:
         return tag == f"{major}{minor}"
     if style == "short":
         return tag == major
+    if style == "dotted":
+        # nunchaku-style: cu12.8
+        return tag.replace(".", "") == f"{major}{minor}"
     return False
 
 
@@ -158,7 +162,8 @@ def torch_matches(tag: str, target: str, fmt: str = "minor") -> bool:
         minor = d[1:]
         return f"{major}.{minor}" == target_m
     if fmt == "full":
-        tag_clean = re.split(r"[^0-9.]", tag)[0]
+        # "2.8.0.post1" splits to "2.8.0." — strip the trailing dot
+        tag_clean = re.split(r"[^0-9.]", tag)[0].rstrip(".")
         # If target has patch component, match exactly
         if len(target.split(".")) >= 3:
             return tag_clean == target
@@ -170,6 +175,8 @@ def torch_matches(tag: str, target: str, fmt: str = "minor") -> bool:
 
 
 def python_tag_matches(pytag: str, target_python: str) -> bool:
+    if pytag.startswith(("py2.", "py3-")):
+        return True  # version-agnostic wheels (py3-none, py2.py3-none)
     target_cp = "cp" + target_python.replace(".", "")
     if "abi3" in pytag:
         return int(target_cp[2:]) >= int(pytag.split("-")[0][2:])
@@ -209,9 +216,11 @@ def _check_wheel(
     if not m:
         return None, ("regex", "")
     g = m.groupdict()
-    if not cuda_matches(g["cuda"], source.cuda_style, target_cuda):
+    # cuda/torch groups are optional: URL-keyed sources (kaolin, xformers,
+    # llama-cpp-python) encode the combo in the index URL, not the filename.
+    if g.get("cuda") is not None and not cuda_matches(g["cuda"], source.cuda_style, target_cuda):
         return None, ("cuda", f"wheel={g['cuda']} target={target_cuda}")
-    if not torch_matches(g["torch"], target_torch, source.torch_format):
+    if g.get("torch") is not None and not torch_matches(g["torch"], target_torch, source.torch_format):
         return None, ("torch", f"wheel={g['torch']} target={target_torch}")
     if not python_tag_matches(g["pytag"], target_python):
         return None, ("python", f"wheel={g['pytag']} target={target_python}")
@@ -224,21 +233,31 @@ def _check_wheel(
 
 def _build_wheel_match(
     source: Source, fname: str, asset: dict, g: dict, tag: str = "",
+    target_torch: str = "", target_cuda: str = "",
 ) -> WheelMatch:
-    """Construct a WheelMatch from matched regex groups and asset metadata."""
+    """Construct a WheelMatch from matched regex groups and asset metadata.
+
+    For URL-keyed sources the filename carries no cuda/torch tags; the values
+    are taken from the targets (guaranteed by the index URL the wheel came from).
+    """
     url = asset.get("browser_download_url") or asset.get("url", "")
+    sha256 = asset.get("sha256") or ""
+    digest = asset.get("digest") or ""
+    if not sha256 and isinstance(digest, str) and digest.startswith("sha256:"):
+        sha256 = digest[len("sha256:"):]
     return WheelMatch(
         package=source.package,
         filename=fname,
         url=url,
         version=g["version"],
-        torch_version=g["torch"],
-        cuda_tag=g["cuda"],
+        torch_version=g.get("torch") or torch_minor(target_torch),
+        cuda_tag=g.get("cuda") or target_cuda,
         python_tag=g["pytag"],
         platform_tag=g["platform"],
         source_desc=source.description,
         cxx11_abi=g.get("abi"),
         release_tag=tag,
+        sha256=sha256,
     )
 
 
@@ -259,7 +278,8 @@ def search_source(
     matches: list[WheelMatch] = []
 
     if source.source_type == "find-links":
-        url = _render_find_links_url(source.url_template, target_cuda, target_torch)
+        url = _render_find_links_url(source.url_template, target_cuda, target_torch,
+                                     source.torch_format)
         try:
             auth_headers = _get_registry_auth(url)
             assets = fetch_find_links(client, url, use_cache=_cache_mod._use_cache, headers=auth_headers)
@@ -274,7 +294,9 @@ def search_source(
             )
             if g is None:
                 continue
-            matches.append(_build_wheel_match(source, fname, asset, g))
+            matches.append(_build_wheel_match(
+                source, fname, asset, g,
+                target_torch=target_torch, target_cuda=target_cuda))
         return matches
 
     if source.source_type != "github":
@@ -294,7 +316,9 @@ def search_source(
             )
             if g is None:
                 continue
-            matches.append(_build_wheel_match(source, fname, asset, g, tag))
+            matches.append(_build_wheel_match(
+                source, fname, asset, g, tag,
+                target_torch=target_torch, target_cuda=target_cuda))
     return matches
 
 
@@ -324,7 +348,8 @@ def search_source_explain(
         return report
 
     if source.source_type == "find-links":
-        url = _render_find_links_url(source.url_template, target_cuda, target_torch)
+        url = _render_find_links_url(source.url_template, target_cuda, target_torch,
+                                     source.torch_format)
         try:
             auth_headers = _get_registry_auth(url)
             assets = fetch_find_links(client, url, use_cache=_cache_mod._use_cache, headers=auth_headers)
@@ -345,7 +370,9 @@ def search_source_explain(
                 if len(report.rejected) < MAX_REJECTIONS:
                     report.rejected.append(RejectReason(fname, rejection[0], rejection[1]))
                 continue
-            report.matched.append(_build_wheel_match(source, fname, asset, g))
+            report.matched.append(_build_wheel_match(
+                source, fname, asset, g,
+                target_torch=target_torch, target_cuda=target_cuda))
         return report
 
     if source.source_type != "github":
@@ -371,7 +398,9 @@ def search_source_explain(
                 if len(report.rejected) < MAX_REJECTIONS:
                     report.rejected.append(RejectReason(fname, rejection[0], rejection[1]))
                 continue
-            report.matched.append(_build_wheel_match(source, fname, asset, g, tag))
+            report.matched.append(_build_wheel_match(
+                source, fname, asset, g, tag,
+                target_torch=target_torch, target_cuda=target_cuda))
     return report
 
 
@@ -424,6 +453,8 @@ def scan_available_combos(
                 if not m:
                     continue
                 g = m.groupdict()
+                if g.get("cuda") is None or g.get("torch") is None:
+                    continue  # URL-keyed source: combos live in the index URL
                 if not platform_matches(g["platform"], target_platform):
                     continue
                 tv = _normalize_torch_display(g["torch"], source.torch_format)
@@ -445,6 +476,8 @@ def scan_available_combos(
                 if not m:
                     continue
                 g = m.groupdict()
+                if g.get("cuda") is None or g.get("torch") is None:
+                    continue  # URL-keyed source: combos live in the index URL
                 if not platform_matches(g["platform"], target_platform):
                     continue
                 tv = _normalize_torch_display(g["torch"], source.torch_format)

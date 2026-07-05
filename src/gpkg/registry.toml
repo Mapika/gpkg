@@ -49,7 +49,9 @@ repo         = "Dao-AILab/flash-attention"
 wheel_name   = "flash_attn-{version}+cu{cuda}torch{torch}cxx11abi{abi}-{pytag}-{platform}.whl"
 cuda_style   = "short"
 has_abi      = true
-scan_tags    = 3
+# FA4 beta releases (py3-none-any) now occupy the newest tags; scan deep
+# enough to reach the FA2 releases that carry the compiled wheel matrix.
+scan_tags    = 12
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -164,16 +166,8 @@ cuda_style   = "full"
 torch_format = "full"
 scan_tags    = 5
 
-# mobcat40: Blackwell-specific builds (sm_120, torch 2.11 nightly)
-[[sources]]
-package      = "sageattention"
-description  = "SageAttention 2 — mobcat40 Blackwell (RTX 50xx, sm120)"
-type         = "github"
-repo         = "mobcat40/sageattention-blackwell"
-wheel_name   = "sageattention-{version}+cu{cuda}.torch{torch}-{pytag}-{platform}.whl"
-cuda_style   = "full"
-torch_format = "minor"
-scan_tags    = 3
+# mobcat40/sageattention-blackwell: removed 2026-07-05 — the repo no longer
+# has any releases (registry health check flagged 0 wheels).
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -191,6 +185,87 @@ scan_tags    = 3
 # type         = "github"
 # repo         = "woct0rdho/triton-windows"
 # NOTE: triton wheels don't follow cuda/torch versioning — skip for now
+
+
+# ════════════════════════════════════════════════════════════════════
+#  FLASH ATTENTION — WINDOWS (kingbri1, formerly bdashore3)
+# ════════════════════════════════════════════════════════════════════
+
+# Windows-first flash-attn builds (linux added from v2.7.4.post1 for the
+# newest torch of each release). Full cuda (cu128) + full torch (torch2.9.0),
+# unlike Dao-AILab's short cu12/torch2.4 scheme.
+[[sources]]
+package      = "flash-attn"
+description  = "flash-attn — kingbri1 Windows builds"
+type         = "github"
+repo         = "kingbri1/flash-attention"
+wheel_name   = "flash_attn-{version}+cu{cuda}torch{torch}cxx11abi{abi}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "full"
+has_abi      = true
+scan_tags    = 5
+
+
+# ════════════════════════════════════════════════════════════════════
+#  EXLLAMAV2 (quantized LLM inference)
+# ════════════════════════════════════════════════════════════════════
+
+# Note the dot between the cuda and torch tokens: +cu128.torch2.9.0
+# ROCm assets in the same releases are ignored by the pattern.
+[[sources]]
+package      = "exllamav2"
+description  = "ExLlamaV2 — turboderp official"
+type         = "github"
+repo         = "turboderp-org/exllamav2"
+wheel_name   = "exllamav2-{version}+cu{cuda}.torch{torch}-{pytag}-{platform}.whl"
+cuda_style   = "full"
+torch_format = "full"
+scan_tags    = 3
+
+
+# ════════════════════════════════════════════════════════════════════
+#  NUNCHAKU (4-bit diffusion inference, ComfyUI)
+# ════════════════════════════════════════════════════════════════════
+
+# Dotted cuda + minor torch: +cu12.8torch2.10
+[[sources]]
+package      = "nunchaku"
+description  = "Nunchaku — nunchaku-ai official"
+type         = "github"
+repo         = "nunchaku-ai/nunchaku"
+wheel_name   = "nunchaku-{version}+cu{cuda}torch{torch}-{pytag}-{platform}.whl"
+cuda_style   = "dotted"
+torch_format = "minor"
+scan_tags    = 5
+
+
+# ════════════════════════════════════════════════════════════════════
+#  KAOLIN (NVIDIA 3D deep learning)
+# ════════════════════════════════════════════════════════════════════
+
+# URL-keyed source: filenames carry no cuda/torch tags — the index page
+# does (torch-2.4.0_cu121.html). Requires full torch version in the URL.
+[[sources]]
+package      = "kaolin"
+description  = "Kaolin — NVIDIA official"
+type         = "find-links"
+url_template = "https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-{torch}_cu{cuda}.html"
+wheel_name   = "kaolin-{version}-{pytag}-{platform}.whl"
+torch_compat = "<2.6"
+
+
+# ════════════════════════════════════════════════════════════════════
+#  LLAMA-CPP-PYTHON (GGUF inference)
+# ════════════════════════════════════════════════════════════════════
+
+# URL-keyed: the cuda variant lives in the index URL; torch not involved.
+# CUDA indexes published for cu121–cu125.
+[[sources]]
+package      = "llama-cpp-python"
+description  = "llama-cpp-python — abetlen official CUDA builds"
+type         = "find-links"
+url_template = "https://abetlen.github.io/llama-cpp-python/whl/cu{cuda}/llama-cpp-python/"
+wheel_name   = "llama_cpp_python-{version}-{pytag}-{platform}.whl"
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -221,6 +296,11 @@ scan_tags    = 3
 # transformer-engine:
 #   NVIDIA ships wheels via their index.
 #   pip install transformer-engine --index-url https://developer.download.nvidia.com/compute/transformer-engine/whl/
+#
+# flashinfer:
+#   Restructured in 0.3+: pure-python wheel + runtime JIT; the cuda-specific
+#   bits ship separately as flashinfer-jit-cache (+cu128, no torch tag).
+#   Just: pip install flashinfer-python
 #
 # ════════════════════════════════════════════════════════════════════
 #  PYTORCH GEOMETRIC (graph neural networks)

@@ -68,13 +68,13 @@ def _template_to_regex(template: str) -> re.Pattern:
     out: list[str] = []
     for p in parts:
         if p == "{version}":
-            out.append(r"(?P<version>\d+\.\d+\.\d+(?:\.(?:post|dev|rc)\d+)?)")
+            out.append(r"(?P<version>\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?(?:\.(?:post|dev|rc)\d+)?)")
         elif p == "{cuda}":
-            out.append(r"(?P<cuda>\d+)")
+            out.append(r"(?P<cuda>\d+(?:\.\d+)?)")  # 130, 12, or dotted 12.8
         elif p == "{torch}":
             out.append(r"(?P<torch>[\d.]+[a-z]*(?:\.\w+)*)")  # 2.11, 2110, 2.9.0andhigher.post4
         elif p == "{pytag}":
-            out.append(r"(?P<pytag>cp\d+-(?:cp\d+[a-z]*|abi3))")
+            out.append(r"(?P<pytag>cp\d+-(?:cp\d+[a-z]*|abi3)|py3-none|py2\.py3-none)")
         elif p == "{platform}":
             out.append(r"(?P<platform>[a-zA-Z0-9_.]+(?:\.[a-zA-Z0-9_.]+)*)")
         elif p == "{abi}":

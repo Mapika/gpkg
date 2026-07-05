@@ -1011,3 +1011,123 @@ class TestWheelCache:
             env = {"TORCH_CUDA_ARCH_LIST": "12.0"}
             result = build_wheel("nonexistent-pkg", env, timeout=60)
             assert result is None
+
+
+# -- New sources (0.7): real filenames captured from live sources 2026-07-05 --
+
+
+class TestNewSources:
+    def _match(self, source, fname, torch, cuda, python="3.12",
+               plat="linux_x86_64", abi="FALSE"):
+        from gpkg.matching import _check_wheel
+        return _check_wheel(fname, source, source.regex, torch, cuda, python, plat, abi)
+
+    def test_kingbri_flash_attn_windows(self):
+        src = Source(
+            package="flash-attn", description="kingbri1", source_type="github",
+            repo="kingbri1/flash-attention",
+            wheel_name="flash_attn-{version}+cu{cuda}torch{torch}cxx11abi{abi}-{pytag}-{platform}.whl",
+            cuda_style="full", torch_format="full", has_abi=True,
+        )
+        g, rej = self._match(
+            src, "flash_attn-2.8.3+cu128torch2.9.0cxx11abiFALSE-cp313-cp313-win_amd64.whl",
+            torch="2.9.0", cuda="128", python="3.13", plat="win_amd64")
+        assert rej is None
+        assert g["version"] == "2.8.3"
+        g, rej = self._match(
+            src, "flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp313-cp313-linux_x86_64.whl",
+            torch="2.7.0", cuda="128", python="3.13")
+        assert rej is None
+        assert g["version"] == "2.7.4.post1"
+
+    def test_exllamav2_dot_separator(self):
+        src = Source(
+            package="exllamav2", description="turboderp", source_type="github",
+            repo="turboderp-org/exllamav2",
+            wheel_name="exllamav2-{version}+cu{cuda}.torch{torch}-{pytag}-{platform}.whl",
+            cuda_style="full", torch_format="full",
+        )
+        g, rej = self._match(
+            src, "exllamav2-0.3.2+cu118.torch2.3.1-cp310-cp310-linux_x86_64.whl",
+            torch="2.3.1", cuda="118", python="3.10")
+        assert rej is None
+        g, rej = self._match(
+            src, "exllamav2-0.3.2+cu118.torch2.4.0-cp312-cp312-win_amd64.whl",
+            torch="2.4.0", cuda="118", plat="win_amd64")
+        assert rej is None
+        # ROCm assets in the same releases must not match
+        g, rej = self._match(
+            src, "exllamav2-0.3.2+rocm6.4.torch2.9.0-cp312-cp312-linux_x86_64.whl",
+            torch="2.9.0", cuda="118")
+        assert g is None
+
+    def test_nunchaku_dotted_cuda_minor_torch(self):
+        src = Source(
+            package="nunchaku", description="nunchaku-ai", source_type="github",
+            repo="nunchaku-ai/nunchaku",
+            wheel_name="nunchaku-{version}+cu{cuda}torch{torch}-{pytag}-{platform}.whl",
+            cuda_style="dotted", torch_format="minor",
+        )
+        g, rej = self._match(
+            src, "nunchaku-1.2.1+cu12.8torch2.10-cp313-cp313-win_amd64.whl",
+            torch="2.10", cuda="128", python="3.13", plat="win_amd64")
+        assert rej is None
+        assert g["cuda"] == "12.8"
+        g, rej = self._match(
+            src, "nunchaku-1.3.0.dev20260306+cu12.8torch2.10-cp312-cp312-linux_x86_64.whl",
+            torch="2.10.0", cuda="12.8")
+        assert rej is None
+        assert g["version"] == "1.3.0.dev20260306"
+
+    def test_kaolin_url_keyed(self):
+        from gpkg.matching import _build_wheel_match
+        src = Source(
+            package="kaolin", description="NVIDIA", source_type="find-links",
+            url_template="https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-{torch}_cu{cuda}.html",
+            wheel_name="kaolin-{version}-{pytag}-{platform}.whl",
+            torch_compat="<2.6",
+        )
+        fname = "kaolin-0.17.0-cp311-cp311-linux_x86_64.whl"
+        g, rej = self._match(src, fname, torch="2.5.1", cuda="121", python="3.11")
+        assert rej is None
+        assert "cuda" not in g and "torch" not in g
+        m = _build_wheel_match(src, fname, {"url": "https://x/" + fname}, g,
+                               target_torch="2.5.1", target_cuda="121")
+        assert m.torch_version == "2.5"
+        assert m.cuda_tag == "121"
+        g, rej = self._match(src, "kaolin-0.17.0-cp312-cp312-win_amd64.whl",
+                             torch="2.5.1", cuda="121", plat="win_amd64")
+        assert rej is None
+
+    def test_llama_cpp_python_py3_none(self):
+        src = Source(
+            package="llama-cpp-python", description="abetlen", source_type="find-links",
+            url_template="https://abetlen.github.io/llama-cpp-python/whl/cu{cuda}/llama-cpp-python/",
+            wheel_name="llama_cpp_python-{version}-{pytag}-{platform}.whl",
+        )
+        g, rej = self._match(src, "llama_cpp_python-0.3.32-py3-none-manylinux_2_35_x86_64.whl",
+                             torch="2.9.0", cuda="124")
+        assert rej is None
+        g, rej = self._match(src, "llama_cpp_python-0.3.31-py3-none-win_amd64.whl",
+                             torch="2.9.0", cuda="124", plat="win_amd64")
+        assert rej is None
+        g, rej = self._match(src, "llama_cpp_python-0.2.59-cp312-cp312-win_amd64.whl",
+                             torch="2.9.0", cuda="121", plat="win_amd64")
+        assert rej is None
+
+    def test_sageattention_windows_abi3_post_suffix(self):
+        src = Source(
+            package="sageattention", description="woct0rdho", source_type="github",
+            repo="woct0rdho/SageAttention",
+            wheel_name="sageattention-{version}+cu{cuda}torch{torch}-{pytag}-{platform}.whl",
+            cuda_style="full", torch_format="full",
+        )
+        # .post1 directly after the torch token, abi3 python tag, win-only repo
+        g, rej = self._match(
+            src, "sageattention-2.2.0+cu128torch2.8.0.post1-cp39-abi3-win_amd64.whl",
+            torch="2.8.0", cuda="128", plat="win_amd64")
+        assert rej is None
+        g, rej = self._match(
+            src, "sageattention-2.2.0+cu130torch2.9.1.post5-cp310-abi3-win_amd64.whl",
+            torch="2.9.1", cuda="130", python="3.12", plat="win_amd64")
+        assert rej is None

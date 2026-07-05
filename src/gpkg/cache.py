@@ -21,7 +21,7 @@ from gpkg import console
 # GitHub API (cached)
 # ---------------------------------------------------------------------------
 
-_ANCHOR_RE = re.compile(r'<a\s[^>]*href="([^"]+)"')
+_ANCHOR_RE = re.compile(r"""<a\s[^>]*href=["']([^"']+)["']""")
 _release_cache: dict[str, list[dict]] = {}
 _use_cache: bool = True
 _CACHE_TTL = 600  # 10 minutes
@@ -141,18 +141,18 @@ def _get_registry_auth(url: str) -> Optional[dict[str, str]]:
     """Get auth headers for a non-GitHub registry URL.
 
     Resolution chain:
-    1. UVFORGE_TOKEN_<HOST> (host-specific, dots/hyphens -> underscores, uppercased)
-    2. UVFORGE_TOKEN (generic fallback)
-    3. None (let httpx use ~/.netrc)
+    1. GPKG_TOKEN_<HOST> (host-specific, dots/hyphens -> underscores, uppercased)
+    2. GPKG_TOKEN (generic fallback)
+    3. UVFORGE_TOKEN_<HOST> / UVFORGE_TOKEN (legacy names)
+    4. None (let httpx use ~/.netrc)
     """
     host = urlparse(url).hostname or ""
     host_key = host.upper().replace(".", "_").replace("-", "_")
-    token = os.environ.get(f"UVFORGE_TOKEN_{host_key}")
-    if token:
-        return {"Authorization": f"Bearer {token}"}
-    token = os.environ.get("UVFORGE_TOKEN")
-    if token:
-        return {"Authorization": f"Bearer {token}"}
+    for var in (f"GPKG_TOKEN_{host_key}", "GPKG_TOKEN",
+                f"UVFORGE_TOKEN_{host_key}", "UVFORGE_TOKEN"):
+        token = os.environ.get(var)
+        if token:
+            return {"Authorization": f"Bearer {token}"}
     return None
 
 
@@ -168,9 +168,12 @@ def fetch_releases(
         if cached is not None:
             _release_cache[key] = cached
             return cached
+    # GitHub auth is scoped to this request — a client-wide Authorization
+    # header breaks other hosts (S3 rejects tokens it can't validate).
     resp = client.get(
         f"https://api.github.com/repos/{repo}/releases",
         params={"per_page": count},
+        headers=get_headers(),
     )
     if resp.status_code == 403:
         console.print("[red]GitHub API rate limit hit.[/red] Set GITHUB_TOKEN env var.")
@@ -183,15 +186,22 @@ def fetch_releases(
     return data
 
 
-def _render_find_links_url(url_template: str, cuda: str, torch_ver: str) -> str:
-    """Substitute {cuda} and {torch} placeholders in a find-links URL template."""
-    return url_template.replace("{cuda}", cuda).replace("{torch}", torch_ver)
+def _render_find_links_url(
+    url_template: str, cuda: str, torch_ver: str, torch_format: str = "minor",
+) -> str:
+    """Substitute {cuda} and {torch} placeholders in a find-links URL template.
+
+    torch_format "packed" renders 2.9.0 as 290 (windreamer-style URLs).
+    """
+    torch_str = torch_ver.replace(".", "") if torch_format == "packed" else torch_ver
+    return url_template.replace("{cuda}", cuda).replace("{torch}", torch_str)
 
 
 def parse_find_links_html(html: str, base_url: str) -> list[dict]:
     """Parse an HTML page for wheel links (PEP 503 simple index style).
 
-    Returns list of {"name": decoded_filename, "url": resolved_url}.
+    Returns list of {"name": decoded_filename, "url": resolved_url, "sha256": hex or ""}.
+    PyPI-style indexes carry the wheel hash as a #sha256=<hex> URL fragment.
     """
     results: list[dict] = []
     if not base_url.endswith("/") and not base_url.endswith(".html"):
@@ -200,10 +210,12 @@ def parse_find_links_html(html: str, base_url: str) -> list[dict]:
         href = m.group(1)
         url = urljoin(base_url, href)
         decoded_url = unquote(url)
+        decoded_url, _, fragment = decoded_url.partition("#")
         fname = decoded_url.rsplit("/", 1)[-1]
         if not fname.endswith(".whl"):
             continue
-        results.append({"name": fname, "url": decoded_url})
+        sha256 = fragment[len("sha256="):] if fragment.startswith("sha256=") else ""
+        results.append({"name": fname, "url": decoded_url, "sha256": sha256})
     return results
 
 
